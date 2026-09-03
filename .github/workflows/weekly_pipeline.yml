@@ -28,7 +28,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # requirements.txt의 numpy==2.5.2가 Python>=3.12를 요구해 3.11에서는
+          # 설치가 실패한다 (pip: "Requires-Python >=3.12"). 로컬 개발 환경(3.14)에
+          # 맞춰 3.13으로 올려 호환성을 맞춘다.
+          python-version: "3.13"
       - run: pip install -r requirements.txt
       # football-data.co.uk는 과거 결과만 제공하므로, 현재 시즌 CSV를 다시 받는 것만으로
       # "지난 라운드 실제 결과 수집"이 해결된다 (별도 결과 API 불필요).
@@ -50,7 +53,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
       - run: pip install -r requirements.txt
       - run: python src/ingest/download.py --seasons 2526
       # 예정 경기 일정은 football-data.co.uk에 없어 football-data.org API가 필요하다.
