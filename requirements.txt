@@ -1,0 +1,13 @@
+# 핵심 데이터/모델링
+pandas==3.0.5
+numpy==2.5.2
+scipy==1.18.0
+statsmodels==0.15.0
+requests==2.34.2
+
+# 대시보드
+streamlit==1.61.1
+
+# 테스트/린트
+pytest==9.1.1
+ruff==0.16.5
