@@ -4,17 +4,18 @@ API 키가 필요하다: https://www.football-data.org/client/register 에서 �
 발급받아 환경변수 FOOTBALL_DATA_API_KEY로 전달한다 (GitHub Actions에서는
 secrets.FOOTBALL_DATA_API_KEY로 주입).
 
-주의(검증 필요): football-data.org는 팀 이름을 "Manchester United FC"처럼
-정식 명칭으로 주는 반면, football-data.co.uk(과거 결과/배당 데이터)는
-"Man United"처럼 축약 표기를 쓴다. 아래 FDORG_TO_FDCOUK_NAME은 공개적으로
-알려진 명칭 차이를 바탕으로 미리 작성한 매핑이며, 실제 API 키로 응답을 받아본 뒤
-한 번 검증이 필요하다 (이 개발 환경에는 API 키가 없어 실제 호출로 확인하지 못했음).
-매핑에 없는 팀 이름은 조용히 넘어가지 않고 예외를 던진다 — 이름이 어긋난 채로
-엉뚱한 팀에 대한 예측이 만들어지는 것을 막기 위함이다.
+football-data.org는 팀 이름을 "Manchester United FC"처럼 정식 명칭으로 주는
+반면, football-data.co.uk(과거 결과/배당 데이터)는 "Man United"처럼 축약
+표기를 쓴다. 아래 FDORG_TO_FDCOUK_NAME은 시즌마다 승격/강등으로 계속 바뀌므로
+완전한 목록일 수 없다 — 매핑에 없는 팀이 낀 경기는 조용히 잘못 매칭하는 대신
+"그 경기만" 건너뛰고 stderr에 경고를 남긴다 (한 팀 때문에 다른 모든 예정 경기의
+예측까지 막히지 않도록). 어떤 팀이 빠졌는지는 GitHub Actions 로그에서 확인해
+FDORG_TO_FDCOUK_NAME에 추가하면 된다.
 """
 from __future__ import annotations
 
 import os
+import sys
 
 import requests
 
@@ -30,6 +31,7 @@ FDORG_TO_FDCOUK_NAME: dict[str, str] = {
     "Chelsea FC": "Chelsea",
     "Crystal Palace FC": "Crystal Palace",
     "Everton FC": "Everton",
+    "Coventry City FC": "Coventry",
     "Fulham FC": "Fulham",
     "Ipswich Town FC": "Ipswich",
     "Leeds United FC": "Leeds",
@@ -55,6 +57,27 @@ def to_fdcouk_name(fdorg_name: str) -> str:
     return FDORG_TO_FDCOUK_NAME[fdorg_name]
 
 
+def map_matches_json(matches_json: list[dict]) -> list[dict]:
+    """API 응답의 matches 배열을 팀 이름 매핑까지 마친 fixture 목록으로 바꾼다 (순수 함수).
+
+    매핑에 없는 팀이 낀 경기는 그 경기만 건너뛰고 stderr에 경고를 남긴다.
+    """
+    fixtures = []
+    for match in matches_json:
+        try:
+            home_team = to_fdcouk_name(match["homeTeam"]["name"])
+            away_team = to_fdcouk_name(match["awayTeam"]["name"])
+        except KeyError as e:
+            print(f"[fixtures] 팀 이름 매핑이 없어 이 경기를 건너뜁니다: {e}", file=sys.stderr)
+            continue
+        fixtures.append({
+            "date": match["utcDate"][:10],
+            "home_team": home_team,
+            "away_team": away_team,
+        })
+    return fixtures
+
+
 def fetch_upcoming_fixtures(api_key: str | None = None, status: str = "SCHEDULED") -> list[dict]:
     """예정된 EPL 경기 목록을 [{"date": "YYYY-MM-DD", "home_team": ..., "away_team": ...}] 형태로 반환한다.
 
@@ -76,12 +99,4 @@ def fetch_upcoming_fixtures(api_key: str | None = None, status: str = "SCHEDULED
     )
     resp.raise_for_status()
     data = resp.json()
-
-    fixtures = []
-    for match in data.get("matches", []):
-        fixtures.append({
-            "date": match["utcDate"][:10],
-            "home_team": to_fdcouk_name(match["homeTeam"]["name"]),
-            "away_team": to_fdcouk_name(match["awayTeam"]["name"]),
-        })
-    return fixtures
+    return map_matches_json(data.get("matches", []))
