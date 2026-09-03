@@ -31,6 +31,7 @@ FDORG_TO_FDCOUK_NAME: dict[str, str] = {
     "Crystal Palace FC": "Crystal Palace",
     "Everton FC": "Everton",
     "Fulham FC": "Fulham",
+    "Ipswich Town FC": "Ipswich",
     "Leeds United FC": "Leeds",
     "Liverpool FC": "Liverpool",
     "Manchester City FC": "Man City",
