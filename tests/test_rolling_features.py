@@ -2,7 +2,7 @@ import math
 
 import pandas as pd
 
-from features.rolling_features import add_rolling_features
+from features.rolling_features import add_rolling_features, latest_h2h_diff
 
 
 def _matches(rows):
@@ -69,3 +69,47 @@ def test_venue_form_only_counts_same_venue():
     fourth_home_row = out.iloc[4]
     # 직전 3개 "홈" 경기(원정 경기 제외)의 득실차 합: (+2) + (+1) + (-1) = 2
     assert fourth_home_row["home_venue_form"] == 2.0
+
+
+def test_h2h_no_history_is_nan():
+    matches = _matches([("2024-01-01", "A", "B", 2, 0)])
+    out = add_rolling_features(matches)
+    assert math.isnan(out.iloc[0]["home_h2h"])
+    assert math.isnan(out.iloc[0]["away_h2h"])
+
+
+def test_h2h_is_symmetric_and_uses_only_past_meetings():
+    rows = [
+        ("2024-01-01", "A", "B", 2, 0),  # A 홈 승, A 관점 득실차 +2
+        ("2024-06-01", "B", "A", 1, 3),  # B 홈, A가 원정에서 3-1 승 -> A 관점 +2
+        ("2025-01-01", "A", "B", 0, 0),  # 3번째 맞대결: 앞 두 경기(+2, +2) 평균 = A 관점 +2
+    ]
+    out = add_rolling_features(_matches(rows))
+    third = out.iloc[2]
+    assert third["home_h2h"] == 2.0
+    assert third["away_h2h"] == -2.0
+
+
+def test_h2h_ignores_matches_against_other_opponents():
+    rows = [
+        ("2024-01-01", "A", "C", 5, 0),  # A vs C, B와 무관해야 함
+        ("2024-06-01", "A", "B", 1, 0),  # A vs B 첫 맞대결, A 관점 +1
+        ("2025-01-01", "A", "B", 0, 0),  # 2번째 맞대결: 앞의 A-C 경기는 무시하고 +1만 반영
+    ]
+    out = add_rolling_features(_matches(rows))
+    assert out.iloc[2]["home_h2h"] == 1.0
+
+
+def test_latest_h2h_diff_computes_from_full_history():
+    matches = _matches([
+        ("2024-01-01", "A", "B", 2, 0),
+        ("2024-06-01", "B", "A", 1, 1),
+    ])
+    # A 관점: 1차전 +2, 2차전(A 원정) 1-1 무 -> A 관점 0. 평균 = (2+0)/2 = 1
+    assert latest_h2h_diff(matches, "A", "B") == 1.0
+    assert latest_h2h_diff(matches, "B", "A") == -1.0
+
+
+def test_latest_h2h_diff_no_history_is_nan():
+    matches = _matches([("2024-01-01", "A", "C", 1, 0)])
+    assert math.isnan(latest_h2h_diff(matches, "A", "B"))
