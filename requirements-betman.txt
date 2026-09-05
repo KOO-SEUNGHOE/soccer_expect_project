@@ -1,0 +1,5 @@
+# 배트맨(프로토 승부식) 배당 스크래핑 전용 — 메인 파이프라인/대시보드 배포에는
+# 필요 없다 (로컬/수동 실행 전용 섹션이라 requirements.txt와 분리했다).
+# 설치 후 최초 1회 `playwright install chromium` 실행 필요.
+-r requirements.txt
+playwright==1.62.0

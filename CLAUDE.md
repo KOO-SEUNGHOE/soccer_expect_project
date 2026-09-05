@@ -38,17 +38,22 @@ football-predictor/
 │   ├── model/                # 학습/추론 코드 (포아송 회귀 등)
 │   ├── evaluate/            # 백테스트, Brier score, 배당 대비 성능, README 배지 생성
 │   ├── pipeline/             # 주간 파이프라인 (다음 라운드 예측 생성, 지난 결과 수집, DB)
+│   ├── betman/                # [메인 파이프라인과 별개 섹션] 배트맨 프로토 승부식 배당
+│   │                           # 스크래핑(Playwright) — 로컬/수동 전용, 자동화 미포함
 │   └── api/                  # FastAPI 서빙 레이어 (아직 미구현)
 ├── dashboard/
-│   └── app.py                 # Streamlit 대시보드 (백테스트/실전 성능/다음 라운드 예측)
+│   └── app.py                 # Streamlit 대시보드 (백테스트/실전 성능/다음 라운드 예측/
+│                               # 배트맨 프로토, Streamlit Cloud에 배포됨)
 ├── logs/
-│   └── predictions.db        # 예측 이력 누적 DB (주간 파이프라인이 최초 실행 시 생성)
+│   ├── predictions.db        # 우리 모델 예측 이력 DB (주간 파이프라인이 최초 실행 시 생성)
+│   └── betman_odds.db        # 배트맨 프로토 배당 이력 DB (별개, 수동 실행 시 생성)
 ├── .github/workflows/
-│   └── weekly_pipeline.yml    # 매주 월/금 cron (실제 GitHub 저장소에 push 후 동작 —
-│                               # 이 환경엔 git 저장소가 없어 실제 실행은 아직 검증 안 됨.
-│                               # football-data.org API 키(FOOTBALL_DATA_API_KEY)도 필요)
+│   └── weekly_pipeline.yml    # 매주 월/금 cron. 실제 GitHub Actions에서 수동 실행(workflow_dispatch)으로
+│                               # 검증 완료 (numpy Python 버전 문제, 승격팀 이름 매핑 3건 발견해 수정함)
+├── requirements.txt            # 메인 파이프라인/대시보드 의존성
+├── requirements-betman.txt     # 배트맨 섹션 전용 (playwright 추가, requirements.txt 상속)
 └── tests/                     # pytest 유닛 테스트 (마진 제거, 포아송 확률, 롤링 피처 누수,
-                                # 파이프라인 DB/채점 로직 등)
+                                # 파이프라인 DB/채점 로직, 배트맨 배당 파싱/DB 등)
 ```
 
 ---
@@ -129,7 +134,7 @@ football-predictor/
 
 ---
 
-## 지속 운영 파이프라인 (핵심, 코드는 구현됨 — 실제 GitHub Actions 실행은 미검증)
+## 지속 운영 파이프라인 (핵심, 실제 GitHub Actions 실행으로 검증 완료)
 
 - **매주 월요일**: 지난 라운드 실제 결과 수집(`src/pipeline/collect_results.py`,
   현재 시즌 CSV 재다운로드로 해결) → 저장했던 예측과 비교 →
@@ -138,11 +143,34 @@ football-predictor/
 - **매주 금요일**: 다음 라운드 예측 생성(`src/pipeline/predict_next_round.py`,
   football-data.org API로 예정 경기 조회) → `logs/predictions.db`에 저장
 - 이 파이프라인은 `.github/workflows/weekly_pipeline.yml`에서 cron으로 실행된다.
-  단, 이 개발 환경에는 git 저장소/GitHub 원격 저장소가 없고 football-data.org
-  API 키도 없어 실제 워크플로 실행으로 검증하지 못했다 — 저장소를 만들고
-  `FOOTBALL_DATA_API_KEY` 시크릿을 등록한 뒤 `workflow_dispatch`로 한 번
-  수동 실행해 확인할 것.
-- 사람 개입 없이 돌아가는 것이 목표
+  `workflow_dispatch`로 여러 차례 수동 실행해 `predict`/`collect` 모두 정상
+  동작 확인함. 검증 과정에서 발견/수정한 문제:
+  - numpy==2.5.2가 Python>=3.12를 요구해 워크플로 Python을 3.11→3.13으로 변경
+  - football-data.org 팀 이름 매핑에 승격팀 3곳(Ipswich, Coventry, Hull) 누락 → 추가
+  - 매핑에 없는 팀 하나 때문에 전체 실행이 죽던 문제 → 해당 경기만 건너뛰도록 개선
+- 사람 개입 없이 돌아가는 것이 목표 (달성)
+
+## 배트맨 프로토 승부식 섹션 (메인 파이프라인과 완전히 별개)
+
+한국 공식 스포츠토토(배트맨, betman.co.kr)의 "프로토 승부식"에서 EPL 경기의
+실제 고정 배당(승/무/패)을 가져와 대시보드에 별도로 보여주는 섹션.
+`src/betman/`에 구현되어 있고, 위 자동화 파이프라인과 절대 섞지 않는다.
+
+- **왜 별도 섹션인가**: 배트맨의 "축구토토 승무패"는 배당이 아니라 투표율(%)만
+  주므로 이 프로젝트의 "배당 마진 제거 → 시장 확률" 방법론과 성격이 다르다.
+  "프로토 승부식"만 실제 소수점 고정 배당을 쓴다.
+- **왜 자동화(GitHub Actions)에 포함하지 않는가**: 배당 데이터가 페이지 로드 후
+  내부 API 호출로 채워져서 Playwright(헤드리스 브라우저)가 필요한데, GitHub
+  Actions 같은 클라우드 IP는 이런 사이트의 봇 차단에 걸리기 쉽다. 로컬/수동
+  실행 전용으로 두고, `requirements.txt`가 아닌 `requirements-betman.txt`에
+  playwright를 분리했다.
+- `src/betman/proto_odds.py`: 홈 화면에서 현재 판매 중인 프로토 승부식 회차를
+  자동으로 찾아 EPL 경기의 배당을 `logs/betman_odds.db`에 저장
+- `src/betman/score_odds.py`: 시즌 CSV 재다운로드로 결과 확정된 경기를 채점
+- `src/betman/db.py`: `logs/predictions.db`와 별개인 자체 SQLite 스키마
+- 팀 이름 매핑(`KR_TO_FDCOUK_NAME`)은 실제 화면에서 하나씩 확인하며 채웠고
+  (Everton의 정확한 표기가 "에버턴"이지 "에버튼"이 아니라는 것도 이렇게 발견함),
+  없는 팀은 전체를 막지 않고 그 경기만 건너뛰며 경고를 남긴다.
 
 ---
 
@@ -167,17 +195,12 @@ football-predictor/
 3. ~~최근 5경기 폼, 홈/원정 편차 등 피처 추가해서 배당 대비 성능 개선 시도~~
    (완료, 효과는 아직 없음 — README "백테스트 결과" 참고. 표본 적은 팀에
    대한 regularization, xG 피처 등이 다음 후보)
-4. ~~GitHub Actions 주간 자동화 파이프라인 구축~~ (코드/워크플로 작성 완료,
-   `logs/predictions.db` SQLite 스키마 포함. **미검증**: git 저장소가 없어
-   실제 push/Actions 실행을 못 해봤고, football-data.org API 키가 없어
-   `predict_next_round.py`의 예정 경기 조회 및 팀 이름 매핑도 실호출로
-   확인하지 못함 — 저장소 생성 + API 키 등록 후 반드시 한 번 수동 검증할 것)
-5. ~~Streamlit 대시보드~~ (완료, `dashboard/app.py`, 브라우저로 3개 탭 모두
-   렌더링 확인함 — `streamlit run dashboard/app.py`)
+4. ~~GitHub Actions 주간 자동화 파이프라인 구축~~ (완료, 실제 Actions
+   `workflow_dispatch`로 수차례 검증. Python 버전/팀 이름 매핑 문제 발견해 수정함)
+5. ~~Streamlit 대시보드~~ (완료, `dashboard/app.py`, Streamlit Cloud 배포함)
+6. ~~배트맨 프로토 승부식 배당 섹션~~ (완료, `src/betman/`, 위 "배트맨 프로토
+   승부식 섹션" 참고. 로컬/수동 전용)
 
 ## 다음으로 시도해볼 것 (우선순위 밖, 후보)
-
-- 위 자동화 파이프라인을 실제 GitHub 저장소에서 한 번 수동 실행(`workflow_dispatch`)해
-  end-to-end 검증
 - 피처 추가가 아직 배당을 못 이기는 문제: 표본 적은 팀에 대한 축소추정/
   regularization, xG 기반 피처(Understat 크롤링) 등

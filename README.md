@@ -32,8 +32,12 @@ _(아직 실전 예측 채점 결과가 없습니다 — 주간 파이프라인�
   배지를 자동 갱신 (하드코딩 없음)
 - `.github/workflows/weekly_pipeline.yml` — 매주 월요일 결과 수집, 금요일 다음
   라운드 예측을 cron으로 실행
-- `dashboard/app.py` — 백테스트/실전 성능/다음 라운드 예측을 보는 Streamlit
-  대시보드 (`streamlit run dashboard/app.py`)
+- `dashboard/app.py` — 백테스트/실전 성능/다음 라운드 예측/배트맨 프로토 배당을
+  보는 Streamlit 대시보드 (`streamlit run dashboard/app.py`,
+  [Streamlit Cloud에 배포됨](https://soccerexpectproject-dj8mjhiqg8hnnjvgjhkpwj.streamlit.app))
+- `src/betman/` — **메인 파이프라인과 완전히 별개인 섹션.** 한국 공식
+  스포츠토토(배트맨)의 "프로토 승부식"에서 EPL 경기의 실제 고정 배당(승/무/패)을
+  가져온다. 자세한 내용은 아래 "배트맨 프로토 승부식 섹션" 참고.
 
 ## 백테스트 결과 (2022-23~2025-26 시즌 전체, 1520경기 / 최소 1시즌 학습 후 라운드 단위 재학습)
 
@@ -65,16 +69,43 @@ _(아직 실전 예측 채점 결과가 없습니다 — 주간 파이프라인�
    휴식일수를 추가했지만 위 표처럼 아직 배당을 따라잡지 못함. 다음으로 시도해볼
    것: 팀별 신뢰도 가중치(표본 적은 팀에 축소 추정/regularization), 피처
    상호작용, xG 기반 피처(Understat 크롤링 필요).
-3. ~~**자동화**~~ (코드 작성 완료, **실제 실행은 미검증**): `.github/workflows/weekly_pipeline.yml`이
-   매주 월요일 결과 수집, 금요일 다음 라운드 예측을 cron으로 실행하도록 되어
-   있음. 다만 이 개발 환경엔 git 저장소/GitHub 원격 저장소가 없어 실제
-   push나 Actions 실행으로 검증하지 못했고, football-data.org API 키
-   (`FOOTBALL_DATA_API_KEY`)도 없어 `predict_next_round.py`의 예정 경기 조회와
-   팀 이름 매핑(`src/ingest/fixtures.py`의 `FDORG_TO_FDCOUK_NAME`)도 실제
-   응답으로 확인하지 못했음. **저장소를 만들고 API 키를 등록한 뒤
-   `workflow_dispatch`로 한 번 수동 실행해 검증할 것.**
-4. ~~**대시보드**~~ (완료): `streamlit run dashboard/app.py`로 실행, 백테스트/실전
-   성능/다음 라운드 예측 3개 탭. 브라우저로 렌더링 확인함.
+3. ~~**자동화**~~ (완료, 실제 GitHub Actions 실행으로 검증함): `.github/workflows/weekly_pipeline.yml`이
+   매주 월요일 결과 수집, 금요일 다음 라운드 예측을 cron으로 실행. 실제 저장소에서
+   `workflow_dispatch`로 여러 차례 수동 실행해 `predict`/`collect` 모두 정상
+   동작 확인 (도중에 numpy Python 버전 문제, 승격팀 이름 매핑 3건 발견해 수정함).
+4. ~~**대시보드**~~ (완료): `streamlit run dashboard/app.py`로 로컬 실행 가능,
+   [Streamlit Cloud에도 배포](https://soccerexpectproject-dj8mjhiqg8hnnjvgjhkpwj.streamlit.app)해
+   상시 접근 가능. 백테스트/실전 성능/다음 라운드 예측/배트맨 프로토 4개 탭.
+5. ~~**배트맨 프로토 배당 섹션**~~ (완료): 아래 "배트맨 프로토 승부식 섹션" 참고.
+
+## 배트맨 프로토 승부식 섹션 (메인 파이프라인과 완전히 별개)
+
+한국 공식 스포츠토토 배트맨(betman.co.kr)에서 EPL 경기의 실제 배당을 가져와
+보여주는 별도 섹션. 위 모델/백테스트/자동화와는 데이터 소스도, 실행 방식도
+완전히 다르므로 섞지 않는다.
+
+- **왜 "승무패"가 아니라 "프로토 승부식"인가**: 배트맨의 "축구토토 승무패"는
+  실제 배당이 아니라 베팅 금액 비율(투표율%)만 제공한다 — 이 프로젝트가
+  전제하는 "배당 마진 제거 → 시장 확률"과 성격이 다르다. 반면 "프로토 승부식"은
+  실시간으로 오르내리는 진짜 소수점 고정 배당(예: 1.90/3.30/3.40)을 쓴다.
+- **자동화 파이프라인에 포함하지 않는 이유**: 이 데이터는 페이지 로드 후 내부
+  API 호출로 채워져서 Playwright(헤드리스 브라우저)가 필요하다. GitHub Actions
+  같은 클라우드 IP는 이런 사이트의 봇 차단에 걸리기 쉬워서, 로컬/수동 실행
+  전용으로 뒀다.
+- **사용법**:
+  ```bash
+  pip install -r requirements-betman.txt
+  playwright install chromium   # 최초 1회
+  python src/betman/proto_odds.py          # 예정 경기 배당 수집
+  python src/ingest/download.py --seasons 2526   # 결과 채점 전 최신화
+  python src/betman/score_odds.py          # 결과 확정된 경기 채점
+  ```
+  실행 후 `logs/betman_odds.db`가 갱신되며, 대시보드의 "배트맨 프로토" 탭에
+  바로 반영된다 (배포된 Streamlit Cloud에 반영하려면 이 DB 변경을 커밋/push).
+- **팀 이름 매핑 주의**: `src/betman/proto_odds.py`의 `KR_TO_FDCOUK_NAME`은
+  실제 화면에서 확인하며 채운 목록이라 완전하지 않을 수 있다 (승격/강등으로
+  팀이 바뀌면 특히). 매핑에 없는 팀은 전체 실행을 막지 않고 그 경기만 건너뛰고
+  경고를 남긴다 — 경고가 뜨면 해당 팀 한글 표기를 매핑에 추가할 것.
 
 ## 다음으로 시도해볼 것
 

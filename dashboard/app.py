@@ -13,6 +13,9 @@ import streamlit as st
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
+from betman.db import connect as betman_connect
+from betman.db import fetch_scored as betman_fetch_scored
+from betman.db import fetch_unscored as betman_fetch_unscored
 from evaluate.backtest import run_walkforward_backtest, summarize
 from evaluate.generate_badge import compute_stats
 from features.build_features import load_all_seasons
@@ -75,7 +78,29 @@ PROB_COLUMN_CONFIG = {
     "원정승%": st.column_config.ProgressColumn("원정승 확률", format="%.0f%%", min_value=0, max_value=100),
 }
 
-tab_backtest, tab_live, tab_upcoming = st.tabs(["백테스트", "실전 성능", "다음 라운드 예측"])
+def _favorite_code(row: pd.Series) -> str:
+    """배당이 가장 낮은(=가장 유력한) 쪽의 코드(H/D/A)를 반환한다."""
+    odds = {"H": row["odds_h"], "D": row["odds_d"], "A": row["odds_a"]}
+    return min(odds, key=odds.get)
+
+
+def _favorite_text(row: pd.Series) -> str:
+    code = _favorite_code(row)
+    if code == "D":
+        return f"무승부 우세 (배당 {row['odds_d']:.2f})"
+    team = row["home_team"] if code == "H" else row["away_team"]
+    return f"{team} 승 우세 (배당 {row[f'odds_{code.lower()}']:.2f})"
+
+
+ODDS_COLUMN_CONFIG = {
+    "odds_h": st.column_config.NumberColumn("홈승 배당", format="%.2f"),
+    "odds_d": st.column_config.NumberColumn("무승부 배당", format="%.2f"),
+    "odds_a": st.column_config.NumberColumn("원정승 배당", format="%.2f"),
+}
+
+tab_backtest, tab_live, tab_upcoming, tab_betman = st.tabs(
+    ["백테스트", "실전 성능", "다음 라운드 예측", "배트맨 프로토"]
+)
 
 with tab_backtest:
     st.subheader("전체 시즌 데이터 walk-forward 백테스트")
@@ -160,6 +185,63 @@ with tab_upcoming:
         st.dataframe(
             df[["날짜", "홈팀", "원정팀", "예상 결과", "홈승%", "무승부%", "원정승%"]],
             column_config=PROB_COLUMN_CONFIG,
+            hide_index=True,
+            use_container_width=True,
+        )
+
+with tab_betman:
+    st.subheader("배트맨(공식 스포츠토토) 프로토 승부식 — 측정된 배당")
+    st.caption(
+        "위 탭들(우리 모델)과는 완전히 별개의 섹션입니다. football-data.co.uk 대신 "
+        "한국 공식 스포츠토토 배트맨의 '프로토 승부식' 실제 고정 배당(승/무/패)을 보여줍니다. "
+        "이 데이터는 자동화 파이프라인에 포함되지 않고, 로컬에서 수동으로 갱신합니다: "
+        "`python src/betman/proto_odds.py` (최초 1회 `playwright install chromium` 필요)."
+    )
+    betman_conn = betman_connect()
+
+    st.markdown("#### 예정 경기 배당")
+    betman_unscored = betman_fetch_unscored(betman_conn)
+    if not betman_unscored:
+        st.info("저장된 배당이 없습니다. `python src/betman/proto_odds.py`를 먼저 실행하세요.")
+    else:
+        odds_df = pd.DataFrame([dict(r) for r in betman_unscored])
+        odds_df["예상 결과"] = odds_df.apply(_favorite_text, axis=1)
+        odds_df = odds_df.rename(columns={
+            "match_date": "날짜", "home_team": "홈팀", "away_team": "원정팀",
+        })
+        st.dataframe(
+            odds_df[["날짜", "홈팀", "원정팀", "예상 결과", "odds_h", "odds_d", "odds_a"]],
+            column_config=ODDS_COLUMN_CONFIG,
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    st.markdown("#### 배당 기준 적중률 (결과 확정된 경기만)")
+    betman_scored = betman_fetch_scored(betman_conn)
+    if not betman_scored:
+        st.info(
+            "아직 채점된 경기가 없습니다. `python src/ingest/download.py --seasons <현재 시즌>`로 "
+            "데이터를 갱신한 뒤 `python src/betman/score_odds.py`를 실행하세요."
+        )
+    else:
+        scored_df = pd.DataFrame([dict(r) for r in betman_scored])
+        favorite_code = scored_df.apply(_favorite_code, axis=1)
+        scored_df["적중"] = favorite_code == scored_df["actual_result"]
+        accuracy = scored_df["적중"].mean() * 100
+        st.metric(
+            "최저배당(유력팀) 적중률",
+            f"{accuracy:.0f}%",
+            help=f"{len(scored_df)}경기 기준. 배당이 가장 낮은 결과를 '예상'으로 봤을 때 실제로 맞은 비율.",
+        )
+
+        scored_df["실제 결과"] = scored_df["actual_result"].map(OUTCOME_LABEL)
+        scored_df["판정"] = scored_df["적중"].map({True: "✅ 적중", False: "❌ 빗나감"})
+        scored_df = scored_df.rename(columns={
+            "match_date": "날짜", "home_team": "홈팀", "away_team": "원정팀",
+        })
+        st.dataframe(
+            scored_df[["날짜", "홈팀", "원정팀", "odds_h", "odds_d", "odds_a", "실제 결과", "판정"]],
+            column_config=ODDS_COLUMN_CONFIG,
             hide_index=True,
             use_container_width=True,
         )
