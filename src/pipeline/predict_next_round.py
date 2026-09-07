@@ -43,7 +43,7 @@ def build_predictions(matches: pd.DataFrame, fixtures: list[dict]) -> list[dict]
     for fx in fixtures:
         home_team, away_team = fx["home_team"], fx["away_team"]
         try:
-            probs = model.predict_proba(home_team, away_team)
+            markets = model.predict_markets(home_team, away_team)
         except ValueError:
             continue  # 학습 데이터에 없는 팀 (승격팀 등)
 
@@ -51,8 +51,11 @@ def build_predictions(matches: pd.DataFrame, fixtures: list[dict]) -> list[dict]
             "match_date": fx["date"],
             "home_team": home_team,
             "away_team": away_team,
-            "model_h": probs["H"], "model_d": probs["D"], "model_a": probs["A"],
+            "model_h": markets["H"], "model_d": markets["D"], "model_a": markets["A"],
             "market_h": None, "market_d": None, "market_a": None,
+            "most_likely_score": markets["most_likely_score"],
+            "btts_yes_prob": markets["btts_yes_prob"],
+            "over_2_5_prob": markets["over_2_5_prob"],
             "predicted_at": predicted_at,
         })
     return records

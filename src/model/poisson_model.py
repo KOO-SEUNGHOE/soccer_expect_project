@@ -224,19 +224,21 @@ class PoissonFootballModel:
             )
         return lambda_home, lambda_away
 
-    def predict_proba(
+    def predict_score_matrix(
         self,
         home_team: str,
         away_team: str,
         home_features: dict[str, float] | None = None,
         away_features: dict[str, float] | None = None,
         max_goals: int = 10,
-    ) -> dict[str, float]:
-        """홈승/무/원정승 확률을 반환한다.
+    ) -> np.ndarray:
+        """(max_goals+1) x (max_goals+1) 행렬을 반환한다. [i,j] = P(홈 i골, 원정 j골).
 
-        두 팀의 득점을 독립 포아송으로 가정하고, 가능한 모든 스코어(0~max_goals)에
-        대한 결합확률을 더해 승/무/패 확률을 계산한다. use_dixon_coles=True면
-        저득점 스코어 4개(0-0/1-0/0-1/1-1)에 τ 보정을 곱한 뒤 계산한다.
+        두 팀의 득점을 독립 포아송으로 가정한 결합확률이며, use_dixon_coles=True면
+        저득점 스코어 4개(0-0/1-0/0-1/1-1)에 τ 보정을 곱한다. 잘림 오차(max_goals
+        초과분을 버려서 합이 1에 살짝 못 미치는 것) 보정을 위해 정규화해서 반환한다 —
+        승/무/패(predict_proba)와 추가 마켓(predict_markets) 모두 이 행렬 하나로부터
+        계산해서 서로 다른 값이 나오지 않도록 한다.
         """
         lambda_home, lambda_away = self._expected_goals(home_team, away_team, home_features, away_features)
 
@@ -251,10 +253,52 @@ class PoissonFootballModel:
             for x, y in [(0, 0), (0, 1), (1, 0), (1, 1)]:
                 score_matrix[x, y] *= max(0.0, _dc_tau(x, y, lambda_home, lambda_away, self.rho))
 
-        p_home = float(np.tril(score_matrix, -1).sum())
-        p_draw = float(np.trace(score_matrix))
-        p_away = float(np.triu(score_matrix, 1).sum())
+        return score_matrix / score_matrix.sum()
 
-        # 잘림 오차(max_goals 초과) 보정을 위해 정규화
-        total = p_home + p_draw + p_away
-        return {"H": p_home / total, "D": p_draw / total, "A": p_away / total}
+    def predict_proba(
+        self,
+        home_team: str,
+        away_team: str,
+        home_features: dict[str, float] | None = None,
+        away_features: dict[str, float] | None = None,
+        max_goals: int = 10,
+    ) -> dict[str, float]:
+        """홈승/무/원정승 확률을 반환한다."""
+        score_matrix = self.predict_score_matrix(home_team, away_team, home_features, away_features, max_goals)
+        return {
+            "H": float(np.tril(score_matrix, -1).sum()),
+            "D": float(np.trace(score_matrix)),
+            "A": float(np.triu(score_matrix, 1).sum()),
+        }
+
+    def predict_markets(
+        self,
+        home_team: str,
+        away_team: str,
+        home_features: dict[str, float] | None = None,
+        away_features: dict[str, float] | None = None,
+        max_goals: int = 10,
+    ) -> dict:
+        """승/무/패에 더해 최유력 스코어, 양팀득점(BTTS), 오버/언더 2.5골 확률을 반환한다."""
+        score_matrix = self.predict_score_matrix(home_team, away_team, home_features, away_features, max_goals)
+        markets = derive_markets(score_matrix)
+        markets["H"] = float(np.tril(score_matrix, -1).sum())
+        markets["D"] = float(np.trace(score_matrix))
+        markets["A"] = float(np.triu(score_matrix, 1).sum())
+        return markets
+
+
+def derive_markets(score_matrix: np.ndarray) -> dict:
+    """스코어 결합확률 행렬에서 최유력 스코어/BTTS/오버-언더 2.5골 확률을 뽑아낸다 (순수 함수)."""
+    n = score_matrix.shape[0]
+    home_goals, away_goals = np.meshgrid(np.arange(n), np.arange(n), indexing="ij")
+    total_goals = home_goals + away_goals
+
+    top_home, top_away = np.unravel_index(np.argmax(score_matrix), score_matrix.shape)
+    return {
+        "most_likely_score": f"{top_home}-{top_away}",
+        "most_likely_score_prob": float(score_matrix[top_home, top_away]),
+        "btts_yes_prob": float(score_matrix[1:, 1:].sum()),
+        "over_2_5_prob": float(score_matrix[total_goals > 2.5].sum()),
+        "under_2_5_prob": float(score_matrix[total_goals <= 2.5].sum()),
+    }

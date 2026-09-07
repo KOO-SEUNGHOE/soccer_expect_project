@@ -1,7 +1,8 @@
+import numpy as np
 import pandas as pd
 import pytest
 
-from model.poisson_model import PoissonFootballModel, _dc_tau
+from model.poisson_model import PoissonFootballModel, _dc_tau, derive_markets
 
 
 def _toy_matches() -> pd.DataFrame:
@@ -102,3 +103,46 @@ def test_predict_proba_with_dixon_coles_and_feature_cols_sums_to_one():
         away_features={"form": 0.0},
     )
     assert probs["H"] + probs["D"] + probs["A"] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_predict_score_matrix_sums_to_one_and_matches_predict_proba():
+    model = PoissonFootballModel().fit(_toy_matches())
+    matrix = model.predict_score_matrix("A", "B")
+    assert matrix.sum() == pytest.approx(1.0)
+
+    probs = model.predict_proba("A", "B")
+    assert np.trace(matrix) == pytest.approx(probs["D"])
+    assert np.tril(matrix, -1).sum() == pytest.approx(probs["H"])
+    assert np.triu(matrix, 1).sum() == pytest.approx(probs["A"])
+
+
+def test_derive_markets_uniform_matrix():
+    # 2x2 균등분포: (0,0)=(0,1)=(1,0)=(1,1)=0.25
+    matrix = np.full((2, 2), 0.25)
+    markets = derive_markets(matrix)
+    assert markets["most_likely_score_prob"] == pytest.approx(0.25)
+    assert markets["most_likely_score"] in {"0-0", "0-1", "1-0", "1-1"}
+    # BTTS(둘 다 최소 1골) = (1,1) 칸만 = 0.25
+    assert markets["btts_yes_prob"] == pytest.approx(0.25)
+    # 총 득점 2.5 초과인 칸 없음(최대 총득점=2) -> over=0, under=1
+    assert markets["over_2_5_prob"] == pytest.approx(0.0)
+    assert markets["under_2_5_prob"] == pytest.approx(1.0)
+
+
+def test_derive_markets_identifies_correct_top_score():
+    matrix = np.array([
+        [0.1, 0.05, 0.05],
+        [0.05, 0.5, 0.05],   # (1,1)이 최유력
+        [0.05, 0.05, 0.1],
+    ])
+    matrix = matrix / matrix.sum()
+    markets = derive_markets(matrix)
+    assert markets["most_likely_score"] == "1-1"
+
+
+def test_predict_markets_includes_hda_and_extra_markets():
+    model = PoissonFootballModel(use_dixon_coles=True).fit(_toy_matches())
+    markets = model.predict_markets("A", "B")
+    assert markets["H"] + markets["D"] + markets["A"] == pytest.approx(1.0, abs=1e-6)
+    for key in ["most_likely_score", "btts_yes_prob", "over_2_5_prob", "under_2_5_prob"]:
+        assert key in markets
