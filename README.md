@@ -1,7 +1,7 @@
 # football-predictor
 
 <!-- BADGE:START -->
-![실전 예측 성능](https://img.shields.io/badge/%EC%8B%A4%EC%A0%84%20%EC%98%88%EC%B8%A1%201%EA%B2%BD%EA%B8%B0%20Brier-0.093-blue)
+![실전 예측 성능](https://img.shields.io/badge/%EC%8B%A4%EC%A0%84%20%EC%98%88%EC%B8%A1%208%EA%B2%BD%EA%B8%B0%20Brier-0.692-blue)
 <!-- BADGE:END -->
 
 해외 5대리그(우선 EPL) 경기 결과를 포아송 회귀로 예측하고, 북메이커 배당과
