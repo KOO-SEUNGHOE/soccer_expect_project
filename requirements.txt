@@ -7,6 +7,7 @@ requests==2.34.2
 
 # 대시보드
 streamlit==1.61.1
+altair==6.2.2
 
 # 테스트/린트
 pytest==9.1.1

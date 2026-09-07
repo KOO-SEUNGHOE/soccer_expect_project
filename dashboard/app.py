@@ -8,6 +8,7 @@ from __future__ import annotations
 import pathlib
 import sys
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -17,6 +18,7 @@ from betman.db import connect as betman_connect
 from betman.db import fetch_scored as betman_fetch_scored
 from betman.db import fetch_unscored as betman_fetch_unscored
 from evaluate.backtest import run_walkforward_backtest, summarize
+from evaluate.calibration import compute_calibration
 from evaluate.generate_badge import compute_stats
 from features.build_features import load_all_seasons
 from pipeline.db import connect, fetch_scored, fetch_unscored
@@ -27,16 +29,73 @@ ENHANCED_FEATURE_COLS = ["form", "venue_form", "rest_days"]
 OUTCOME_VECTOR = {"H": (1, 0, 0), "D": (0, 1, 0), "A": (0, 0, 1)}
 OUTCOME_LABEL = {"H": "홈팀 승", "D": "무승부", "A": "원정팀 승"}
 
-st.set_page_config(page_title="football-predictor", layout="wide")
-st.title("⚽ football-predictor 대시보드")
+st.set_page_config(page_title="football-predictor", page_icon="⚽", layout="wide")
+
+# ---------------------------------------------------------------------------
+# 스타일 — 2026 대시보드 트렌드(다크모드 기본, 절제된 팔레트, bento 카드,
+# 데이터엔 모노스페이스 폰트) 반영. Streamlit 자체 커스터마이징 범위 안에서
+# CSS만 얹는 방식이라 프레임워크 구조는 그대로 두고 표면만 다듬는다.
+# ---------------------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+    html, body, [class*="css"] { font-family: 'Inter', -apple-system, sans-serif; }
+
+    .block-container { padding-top: 2rem; padding-bottom: 3rem; max-width: 1200px; }
+
+    .hero-title { font-size: 2.1rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.1rem; }
+    .hero-sub { color: #9ca3af; font-size: 0.95rem; margin-bottom: 1.6rem; }
+
+    .section-title { font-size: 1.15rem; font-weight: 700; margin: 0.2rem 0 0.6rem 0; }
+
+    /* bento 카드 (st.container(border=True)) */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        border-radius: 18px !important;
+        border: 1px solid rgba(255,255,255,0.08) !important;
+        background: linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.01));
+        box-shadow: 0 4px 24px rgba(0,0,0,0.22);
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"] > div { padding: 0.3rem 0.2rem; }
+
+    .card-highlight div[data-testid="stVerticalBlockBorderWrapper"] {
+        border: 1px solid rgba(34,197,94,0.45) !important;
+        background: linear-gradient(180deg, rgba(34,197,94,0.10), rgba(34,197,94,0.02));
+    }
+
+    .pill {
+        display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px;
+        font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em;
+        background: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid rgba(74,222,128,0.3);
+    }
+
+    /* 숫자는 모노스페이스로 — 데이터 대시보드 트렌드 */
+    div[data-testid="stMetricValue"] { font-family: 'JetBrains Mono', monospace; font-weight: 700; }
+    div[data-testid="stMetricLabel"] { font-size: 0.82rem; opacity: 0.85; }
+
+    button[data-baseweb="tab"] { font-weight: 600; font-size: 0.95rem; }
+
+    hr { margin: 1.6rem 0; opacity: 0.15; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown('<div class="hero-title">⚽ football-predictor</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="hero-sub">EPL 승/무/패 예측 · 배당 시장 비교 · 배트맨 프로토 배당 대시보드</div>',
+    unsafe_allow_html=True,
+)
 
 
 @st.cache_data(show_spinner="2022-23~2025-26 시즌 walk-forward 백테스트 실행 중 (라운드마다 재학습)...")
-def load_backtest_summaries() -> tuple[dict, dict]:
+def load_backtest_summaries() -> tuple[dict, dict, dict, pd.DataFrame]:
     matches = load_all_seasons([RAW_DIR / f for f in SEASON_FILES])
     baseline = run_walkforward_backtest(matches, feature_cols=None)
     enhanced = run_walkforward_backtest(matches, feature_cols=ENHANCED_FEATURE_COLS)
-    return summarize(baseline), summarize(enhanced)
+    dixon_coles = run_walkforward_backtest(matches, feature_cols=None, use_dixon_coles=True)
+    return summarize(baseline), summarize(enhanced), summarize(dixon_coles), dixon_coles
 
 
 def _match_brier(row: pd.Series) -> float:
@@ -72,11 +131,39 @@ def _with_percent_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def render_calibration_chart(curve: pd.DataFrame) -> None:
+    """예측확률 vs 실제 적중 비율 산점도 + y=x 기준선. 점이 대각선에 가까울수록
+    잘 보정된 것이다 (점 크기 = 그 구간에 몇 개 예측이 있었는지)."""
+    diagonal = pd.DataFrame({"x": [0, 1], "y": [0, 1]})
+    line = alt.Chart(diagonal).mark_line(strokeDash=[5, 4], color="#6b7280").encode(
+        x=alt.X("x", scale=alt.Scale(domain=[0, 1])), y=alt.Y("y", scale=alt.Scale(domain=[0, 1]))
+    )
+    points = alt.Chart(curve).mark_circle(color="#22c55e", opacity=0.85).encode(
+        x=alt.X("predicted_mean", scale=alt.Scale(domain=[0, 1]), title="예측 확률(구간 평균)"),
+        y=alt.Y("actual_freq", scale=alt.Scale(domain=[0, 1]), title="실제 적중 비율"),
+        size=alt.Size("n", title="표본 수", scale=alt.Scale(range=[40, 500])),
+        tooltip=[
+            alt.Tooltip("predicted_mean", title="예측확률", format=".2f"),
+            alt.Tooltip("actual_freq", title="실제빈도", format=".2f"),
+            alt.Tooltip("n", title="표본수"),
+        ],
+    )
+    st.altair_chart((line + points).properties(height=320), use_container_width=True)
+
+
 PROB_COLUMN_CONFIG = {
     "홈승%": st.column_config.ProgressColumn("홈승 확률", format="%.0f%%", min_value=0, max_value=100),
     "무승부%": st.column_config.ProgressColumn("무승부 확률", format="%.0f%%", min_value=0, max_value=100),
     "원정승%": st.column_config.ProgressColumn("원정승 확률", format="%.0f%%", min_value=0, max_value=100),
 }
+
+MARKET_COLUMN_CONFIG = {
+    **PROB_COLUMN_CONFIG,
+    "최유력 스코어": st.column_config.TextColumn("최유력 스코어"),
+    "BTTS%": st.column_config.ProgressColumn("양팀득점(BTTS) 확률", format="%.0f%%", min_value=0, max_value=100),
+    "오버2.5%": st.column_config.ProgressColumn("오버 2.5골 확률", format="%.0f%%", min_value=0, max_value=100),
+}
+
 
 def _favorite_code(row: pd.Series) -> str:
     """배당이 가장 낮은(=가장 유력한) 쪽의 코드(H/D/A)를 반환한다."""
@@ -99,31 +186,60 @@ ODDS_COLUMN_CONFIG = {
 }
 
 tab_backtest, tab_live, tab_upcoming, tab_betman = st.tabs(
-    ["백테스트", "실전 성능", "다음 라운드 예측", "배트맨 프로토"]
+    ["📊 백테스트", "🎯 실전 성능", "🔮 다음 라운드 예측", "🎟️ 배트맨 프로토"]
 )
 
 with tab_backtest:
-    st.subheader("전체 시즌 데이터 walk-forward 백테스트")
+    st.markdown('<div class="section-title">전체 시즌 데이터 walk-forward 백테스트</div>', unsafe_allow_html=True)
     st.caption(
         "라운드(10경기)마다 그 시점까지의 데이터로 재학습하며 다음 라운드를 예측한 결과. "
         "**Brier score는 낮을수록(=0에 가까울수록) 예측이 정확하다는 뜻**입니다 "
         "(완벽한 예측=0, 아무렇게나 찍은 예측≈0.66)."
     )
-    baseline_summary, enhanced_summary = load_backtest_summaries()
+    baseline_summary, enhanced_summary, dc_summary, dc_results = load_backtest_summaries()
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("① 베이스라인 모델", f"{baseline_summary['model_brier']:.3f}")
-    col2.metric(
-        "② +최근 폼/홈-원정 편차/휴식일수",
-        f"{enhanced_summary['model_brier']:.3f}",
-        delta=f"{enhanced_summary['model_brier'] - baseline_summary['model_brier']:+.3f} (①보다 나쁨)",
-        delta_color="inverse",
+    col1, col2, col3, col4 = st.columns(4)
+    with col1, st.container(border=True):
+        st.metric("① 베이스라인", f"{baseline_summary['model_brier']:.3f}")
+    with col2:
+        st.markdown('<div class="card-highlight">', unsafe_allow_html=True)
+        with st.container(border=True):
+            st.metric(
+                "② +Dixon-Coles 🟢 실전 사용",
+                f"{dc_summary['model_brier']:.4f}",
+                delta=f"{dc_summary['model_brier'] - baseline_summary['model_brier']:+.4f} (①보다 개선)",
+                delta_color="normal",
+            )
+        st.markdown("</div>", unsafe_allow_html=True)
+    with col3, st.container(border=True):
+        st.metric(
+            "③ +폼/편차/휴식일수",
+            f"{enhanced_summary['model_brier']:.3f}",
+            delta=f"{enhanced_summary['model_brier'] - baseline_summary['model_brier']:+.3f} (①보다 나쁨)",
+            delta_color="inverse",
+        )
+    with col4, st.container(border=True):
+        st.metric("④ 시장(북메이커 배당)", f"{baseline_summary['market_brier']:.3f}")
+
+    st.caption("④(시장)이 가장 낮습니다 = 아직 이 모델은 배당 시장보다 정확하지 못합니다.")
+
+    st.markdown('<div class="section-title" style="margin-top:1.4rem;">캘리브레이션 — 확률이 실제로 맞나?</div>', unsafe_allow_html=True)
+    st.caption(
+        "②(Dixon-Coles, 실전 사용 모델) 기준. 점이 점선(y=x) 위에 있으면 그 확률 구간에서 "
+        "**과소평가**(예: 30%라 했는데 실제로 더 자주 일어남), 아래에 있으면 **과대평가**입니다."
     )
-    col3.metric("③ 시장(북메이커 배당)", f"{baseline_summary['market_brier']:.3f}")
-    st.caption("③(시장)이 가장 낮습니다 = 아직 이 모델은 배당 시장보다 정확하지 못합니다.")
+    with st.container(border=True):
+        calibration_curve = compute_calibration(
+            dc_results, {"H": "model_H", "D": "model_D", "A": "model_A"}, n_bins=10
+        )
+        render_calibration_chart(calibration_curve)
 
     with st.expander("경기 수 등 세부 지표 보기"):
-        detail = pd.DataFrame({"① 베이스라인": baseline_summary, "② +피처 추가": enhanced_summary})
+        detail = pd.DataFrame({
+            "① 베이스라인": baseline_summary,
+            "② +Dixon-Coles": dc_summary,
+            "③ +피처 추가": enhanced_summary,
+        })
         detail.index = detail.index.map({
             "n_matches": "평가한 경기 수",
             "model_brier": "모델 Brier score",
@@ -134,14 +250,13 @@ with tab_backtest:
         st.dataframe(detail, use_container_width=True)
 
     st.caption(
-        "현재는 ②(피처 추가)가 ①(베이스라인)보다 나은 성능을 보이지 않습니다 "
-        "(자세한 원인 분석은 README 참고). 그래서 실전 예측(다음 라운드 예측 탭)에는 "
-        "① 베이스라인 + Dixon-Coles 저득점(무승부) 보정을 사용합니다 — 이 보정은 "
-        "손해 없이 Brier를 아주 소폭(0.590→0.5898) 개선했습니다."
+        "③(피처 추가)이 ①보다 나은 성능을 보이지 않아 실전에는 안 씁니다 (자세한 원인 분석은 "
+        "README 참고). 모델-시장 앙상블도 시도했지만 시장 대비 이득이 사실상 없었습니다 "
+        "(README 참고). 실전 예측에는 ① 베이스라인 + ② Dixon-Coles 저득점(무승부) 보정을 씁니다."
     )
 
 with tab_live:
-    st.subheader("실전 예측 채점 이력")
+    st.markdown('<div class="section-title">실전 예측 채점 이력</div>', unsafe_allow_html=True)
     st.caption("주간 파이프라인이 실제로 생성했고 결과가 확정된 예측만 표시합니다.")
     conn = connect()
     scored_rows = fetch_scored(conn)
@@ -151,16 +266,18 @@ with tab_live:
     else:
         df = pd.DataFrame([dict(r) for r in scored_rows])
         stats = compute_stats(scored_rows)
-        st.metric(
-            "실전 누적 Brier score",
-            f"{stats['brier']:.3f}",
-            help=f"{stats['n']}경기 기준. 낮을수록 좋음 (완벽=0, 무작위≈0.66)",
-        )
+        with st.container(border=True):
+            st.metric(
+                "실전 누적 Brier score",
+                f"{stats['brier']:.3f}",
+                help=f"{stats['n']}경기 기준. 낮을수록 좋음 (완벽=0, 무작위≈0.66)",
+            )
 
         df["match_brier"] = df.apply(_match_brier, axis=1)
         df["누적 Brier score"] = df["match_brier"].expanding().mean()
         st.caption("아래로 갈수록(=날짜가 지날수록) 값이 어떻게 변하는지 보여줍니다. 낮을수록 좋습니다.")
-        st.line_chart(df.set_index("match_date")["누적 Brier score"])
+        with st.container(border=True):
+            st.line_chart(df.set_index("match_date")["누적 Brier score"])
 
         display = _with_percent_columns(df)
         display["실제 결과"] = display["actual_result"].map(OUTCOME_LABEL)
@@ -174,7 +291,7 @@ with tab_live:
         )
 
 with tab_upcoming:
-    st.subheader("다음 라운드 예측 (결과 미확정)")
+    st.markdown('<div class="section-title">다음 라운드 예측 (결과 미확정)</div>', unsafe_allow_html=True)
     conn = connect()
     unscored_rows = fetch_unscored(conn)
 
@@ -183,15 +300,25 @@ with tab_upcoming:
     else:
         df = _with_percent_columns(pd.DataFrame([dict(r) for r in unscored_rows]))
         df["예상 결과"] = df.apply(_predicted_outcome_text, axis=1)
+        df["최유력 스코어"] = df.get("most_likely_score")
+        df["BTTS%"] = df.get("btts_yes_prob", pd.Series(dtype=float)) * 100
+        df["오버2.5%"] = df.get("over_2_5_prob", pd.Series(dtype=float)) * 100
+        st.caption(
+            "최유력 스코어/BTTS(양팀득점)/오버-언더는 모델이 이미 계산해둔 스코어 확률 분포에서 "
+            "뽑아낸 값입니다. 이 값들이 비어 있으면 아직 이전 버전 모델로 저장된 예측이라 "
+            "다음 주간 파이프라인 실행 후 채워집니다."
+        )
         st.dataframe(
-            df[["날짜", "홈팀", "원정팀", "예상 결과", "홈승%", "무승부%", "원정승%"]],
-            column_config=PROB_COLUMN_CONFIG,
+            df[["날짜", "홈팀", "원정팀", "예상 결과", "홈승%", "무승부%", "원정승%",
+                "최유력 스코어", "BTTS%", "오버2.5%"]],
+            column_config=MARKET_COLUMN_CONFIG,
             hide_index=True,
             use_container_width=True,
         )
 
 with tab_betman:
-    st.subheader("배트맨(공식 스포츠토토) 프로토 승부식 — 측정된 배당")
+    st.markdown('<div class="section-title">🎟️ 배트맨(공식 스포츠토토) 프로토 승부식 — 측정된 배당</div>', unsafe_allow_html=True)
+    st.markdown('<span class="pill">메인 모델과 별개 섹션</span>', unsafe_allow_html=True)
     st.caption(
         "위 탭들(우리 모델)과는 완전히 별개의 섹션입니다. football-data.co.uk 대신 "
         "한국 공식 스포츠토토 배트맨의 '프로토 승부식' 실제 고정 배당(승/무/패)을 보여줍니다. "
@@ -200,7 +327,7 @@ with tab_betman:
     )
     betman_conn = betman_connect()
 
-    st.markdown("#### 예정 경기 배당")
+    st.markdown('<div class="section-title" style="margin-top:1rem;">예정 경기 배당</div>', unsafe_allow_html=True)
     betman_unscored = betman_fetch_unscored(betman_conn)
     if not betman_unscored:
         st.info("저장된 배당이 없습니다. `python src/betman/proto_odds.py`를 먼저 실행하세요.")
@@ -217,7 +344,7 @@ with tab_betman:
             use_container_width=True,
         )
 
-    st.markdown("#### 배당 기준 적중률 (결과 확정된 경기만)")
+    st.markdown('<div class="section-title" style="margin-top:1rem;">배당 기준 적중률 (결과 확정된 경기만)</div>', unsafe_allow_html=True)
     betman_scored = betman_fetch_scored(betman_conn)
     if not betman_scored:
         st.info(
@@ -229,11 +356,12 @@ with tab_betman:
         favorite_code = scored_df.apply(_favorite_code, axis=1)
         scored_df["적중"] = favorite_code == scored_df["actual_result"]
         accuracy = scored_df["적중"].mean() * 100
-        st.metric(
-            "최저배당(유력팀) 적중률",
-            f"{accuracy:.0f}%",
-            help=f"{len(scored_df)}경기 기준. 배당이 가장 낮은 결과를 '예상'으로 봤을 때 실제로 맞은 비율.",
-        )
+        with st.container(border=True):
+            st.metric(
+                "최저배당(유력팀) 적중률",
+                f"{accuracy:.0f}%",
+                help=f"{len(scored_df)}경기 기준. 배당이 가장 낮은 결과를 '예상'으로 봤을 때 실제로 맞은 비율.",
+            )
 
         scored_df["실제 결과"] = scored_df["actual_result"].map(OUTCOME_LABEL)
         scored_df["판정"] = scored_df["적중"].map({True: "✅ 적중", False: "❌ 빗나감"})
