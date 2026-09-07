@@ -12,6 +12,12 @@ feature_cols로 "최근 폼/홈-원정 편차/휴식일수" 같은 팀 관점의
 넣을 수 있다 (src/features/rolling_features.py 참고). 학습 데이터에는
 home_{name}/away_{name} 컬럼이 있어야 하고, 예측 시에는 predict_proba에
 같은 이름의 키를 가진 home_features/away_features 딕셔너리를 넘겨야 한다.
+
+l2_alpha(기본 0, 정규화 없음)로 L2(ridge) 정규화를 켤 수 있다. 백테스트에서
+확인된 문제(README "백테스트 결과" 참고) — 정규화 없는 GLM은 표본이 아주
+적은 팀(승격 직후 등)의 계수가 극단값으로 튀기 쉬운데, ridge는 그 계수들을
+0 쪽으로 당겨서 이 불안정성을 완화하는 게 목적이다. 절편(Intercept)은
+관례상 규제하지 않는다.
 """
 from __future__ import annotations
 
@@ -23,10 +29,11 @@ from scipy.stats import poisson
 
 
 class PoissonFootballModel:
-    def __init__(self, feature_cols: list[str] | None = None) -> None:
+    def __init__(self, feature_cols: list[str] | None = None, l2_alpha: float = 0.0) -> None:
         self.model = None
         self.teams: list[str] = []
         self.feature_cols = feature_cols or []
+        self.l2_alpha = l2_alpha
 
     def _to_long_format(self, matches: pd.DataFrame) -> pd.DataFrame:
         """각 경기를 '홈팀 득점' 행 1개 + '원정팀 득점' 행 1개로 풀어쓴다.
@@ -72,11 +79,14 @@ class PoissonFootballModel:
         if self.feature_cols:
             formula += " + " + " + ".join(self.feature_cols)
 
-        self.model = smf.glm(
-            formula=formula,
-            data=long_df,
-            family=sm.families.Poisson(),
-        ).fit()
+        model = smf.glm(formula=formula, data=long_df, family=sm.families.Poisson())
+        if self.l2_alpha > 0:
+            # L1_wt=0.0 -> 순수 L2(ridge). Intercept 위치만 alpha=0으로 둬서
+            # 절편은 규제하지 않는다 (나머지 팀 더미/is_home/추가 피처는 동일 강도로 규제).
+            alpha = np.array([0.0 if name == "Intercept" else self.l2_alpha for name in model.exog_names])
+            self.model = model.fit_regularized(alpha=alpha, L1_wt=0.0)
+        else:
+            self.model = model.fit()
         return self
 
     def _expected_goals(

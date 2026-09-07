@@ -42,3 +42,24 @@ def test_predict_proba_with_feature_cols_sums_to_one():
         away_features={"form": 0.0},
     )
     assert probs["H"] + probs["D"] + probs["A"] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_predict_proba_with_l2_alpha_sums_to_one():
+    model = PoissonFootballModel(l2_alpha=1.0).fit(_toy_matches())
+    probs = model.predict_proba("A", "B")
+    assert probs["H"] + probs["D"] + probs["A"] == pytest.approx(1.0, abs=1e-6)
+    assert all(0.0 <= p <= 1.0 for p in probs.values())
+
+
+def test_predict_proba_with_l2_alpha_and_feature_cols_sums_to_one():
+    matches = _toy_matches()
+    matches["home_form"] = [3.0, 1.0, 0.0, 3.0, 1.0, 3.0, 1.0, 0.0, 3.0]
+    matches["away_form"] = [0.0, 1.0, 3.0, 1.0, 3.0, 0.0, 1.0, 3.0, 1.0]
+
+    model = PoissonFootballModel(feature_cols=["form"], l2_alpha=0.5).fit(matches)
+    probs = model.predict_proba(
+        "A", "B",
+        home_features={"form": 3.0},
+        away_features={"form": 0.0},
+    )
+    assert probs["H"] + probs["D"] + probs["A"] == pytest.approx(1.0, abs=1e-6)
