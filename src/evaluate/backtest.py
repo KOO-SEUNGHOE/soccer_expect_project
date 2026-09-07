@@ -110,3 +110,32 @@ def summarize(results: pd.DataFrame) -> dict:
         "model_logloss": log_loss(model_probs, outcomes),
         "market_logloss": log_loss(market_probs, outcomes),
     }
+
+
+def blend_probabilities(results: pd.DataFrame, model_weight: float) -> list[dict]:
+    """모델 확률과 시장 확률을 가중평균으로 섞는다 (앙상블).
+
+    model_weight=1.0이면 모델만, 0.0이면 시장만, 0.5면 동일 가중. 두 확률 모두
+    이미 각각 합이 1이 되도록 정규화돼 있어서(포아송 모델의 정규화, 시장은 마진
+    제거) 볼록결합(convex combination)인 이 블렌딩 결과도 자동으로 합이 1이 된다.
+    """
+    return [
+        {
+            "H": model_weight * r.model_H + (1 - model_weight) * r.market_H,
+            "D": model_weight * r.model_D + (1 - model_weight) * r.market_D,
+            "A": model_weight * r.model_A + (1 - model_weight) * r.market_A,
+        }
+        for r in results.itertuples()
+    ]
+
+
+def summarize_ensemble(results: pd.DataFrame, model_weight: float) -> dict:
+    """blend_probabilities로 섞은 확률의 Brier/로그손실을 계산한다."""
+    probs = blend_probabilities(results, model_weight)
+    outcomes = results["FTR"].tolist()
+    return {
+        "n_matches": len(results),
+        "model_weight": model_weight,
+        "brier": brier_score(probs, outcomes),
+        "logloss": log_loss(probs, outcomes),
+    }
