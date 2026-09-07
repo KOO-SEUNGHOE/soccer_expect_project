@@ -44,6 +44,7 @@ def run_walkforward_backtest(
     retrain_every: int = 10,
     feature_cols: list[str] | None = None,
     l2_alpha: float = 0.0,
+    use_dixon_coles: bool = False,
 ) -> pd.DataFrame:
     """min_train_matches 만큼 학습한 뒤, retrain_every 경기(EPL 한 라운드=10경기)
     묶음마다 그 시점까지의 전체 데이터로 재학습하며 다음 묶음을 예측한다.
@@ -55,7 +56,7 @@ def run_walkforward_backtest(
 
     feature_cols가 주어지면 add_rolling_features로 계산한 최근 폼/홈-원정 편차/
     휴식일수 등을 모델 공변량으로 함께 사용한다. l2_alpha > 0이면 PoissonFootballModel의
-    L2(ridge) 정규화를 켠다.
+    L2(ridge) 정규화를 켠다. use_dixon_coles=True면 저득점(무승부 등) 보정을 켠다.
     """
     matches = matches.sort_values("Date").reset_index(drop=True)
     matches = add_rolling_features(matches)
@@ -67,7 +68,9 @@ def run_walkforward_backtest(
     while cursor < n:
         train = matches.iloc[:cursor]
         test_chunk = clean_for_market_comparison(matches.iloc[cursor:cursor + retrain_every])
-        model = PoissonFootballModel(feature_cols=feature_cols, l2_alpha=l2_alpha).fit(train)
+        model = PoissonFootballModel(
+            feature_cols=feature_cols, l2_alpha=l2_alpha, use_dixon_coles=use_dixon_coles
+        ).fit(train)
 
         for _, row in test_chunk.iterrows():
             home_features = {c: row[f"home_{c}"] for c in feature_cols}

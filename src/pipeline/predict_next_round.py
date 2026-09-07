@@ -4,9 +4,10 @@
 사용법:
     python src/pipeline/predict_next_round.py
 
-기본 모델은 베이스라인(팀 더미만 사용)이다 — README/CLAUDE.md에 기록된
-백테스트 결과, 최근 폼/홈-원정 편차/휴식일수를 추가한 모델이 아직 베이스라인보다
-낫다는 근거가 없기 때문에(오히려 소폭 나쁨) 실전 예측에는 더 나은 쪽을 쓴다.
+기본 모델은 베이스라인(팀 더미만 사용) + Dixon-Coles 저득점(무승부) 보정이다 —
+README/CLAUDE.md에 기록된 백테스트 결과, 최근 폼/홈-원정 편차/휴식일수/상대전적
+같은 추가 피처는 전부 베이스라인보다 나은 근거가 없어(오히려 소폭 나쁨) 빼고,
+Dixon-Coles 보정만 손해 없이 아주 소폭 개선(0.590→0.5898)돼서 켜둔다.
 
 실행 전 `python src/ingest/download.py --seasons <현재 시즌>`로 데이터를 최신
 상태로 갱신해 둬야 한다.
@@ -35,7 +36,7 @@ def build_predictions(matches: pd.DataFrame, fixtures: list[dict]) -> list[dict]
 
     학습 데이터에 없는 팀(승격팀 등)이 낀 경기는 건너뛴다.
     """
-    model = PoissonFootballModel().fit(matches)
+    model = PoissonFootballModel(use_dixon_coles=True).fit(matches)
     predicted_at = dt.datetime.now(dt.timezone.utc).isoformat()
 
     records = []
