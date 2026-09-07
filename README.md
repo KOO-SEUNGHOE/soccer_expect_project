@@ -32,9 +32,13 @@
   배지를 자동 갱신 (하드코딩 없음)
 - `.github/workflows/weekly_pipeline.yml` — 매주 월요일 결과 수집, 금요일 다음
   라운드 예측을 cron으로 실행
-- `dashboard/app.py` — 백테스트/실전 성능/다음 라운드 예측/배트맨 프로토 배당을
-  보는 Streamlit 대시보드 (`streamlit run dashboard/app.py`,
+- `dashboard/app.py` — 백테스트(+캘리브레이션 플롯)/실전 성능/다음 라운드
+  예측(+최유력 스코어·BTTS·오버언더 마켓)/배트맨 프로토 배당을 보는 Streamlit
+  대시보드. 2026 다크모드/bento 카드 트렌드로 리디자인함
+  (`streamlit run dashboard/app.py`,
   [Streamlit Cloud에 배포됨](https://soccerexpectproject-dj8mjhiqg8hnnjvgjhkpwj.streamlit.app))
+- `src/evaluate/calibration.py` — 예측확률이 실제로 보정돼 있는지 계산
+  (예: 70% 확신한 예측이 실제로 70% 정도 맞는지)
 - `src/betman/` — **메인 파이프라인과 완전히 별개인 섹션.** 한국 공식
   스포츠토토(배트맨)의 "프로토 승부식"에서 EPL 경기의 실제 고정 배당(승/무/패)을
   가져온다. 자세한 내용은 아래 "배트맨 프로토 승부식 섹션" 참고.
