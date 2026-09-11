@@ -23,7 +23,7 @@ from features.build_features import load_all_seasons
 from pipeline.db import connect, fetch_unscored, record_result
 
 RAW_DIR = pathlib.Path(__file__).resolve().parents[2] / "data" / "raw"
-SEASON_FILES = ["E0_2223.csv", "E0_2324.csv", "E0_2425.csv", "E0_2526.csv"]
+SEASON_FILES = ["E0_2223.csv", "E0_2324.csv", "E0_2425.csv", "E0_2526.csv", "E0_2627.csv"]
 
 
 def _match_key(date, home_team: str, away_team: str) -> tuple[str, str, str]:

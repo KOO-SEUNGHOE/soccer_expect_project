@@ -28,7 +28,7 @@ from model.poisson_model import PoissonFootballModel
 from pipeline.db import connect, insert_prediction
 
 RAW_DIR = pathlib.Path(__file__).resolve().parents[2] / "data" / "raw"
-SEASON_FILES = ["E0_2223.csv", "E0_2324.csv", "E0_2425.csv", "E0_2526.csv"]
+SEASON_FILES = ["E0_2223.csv", "E0_2324.csv", "E0_2425.csv", "E0_2526.csv", "E0_2627.csv"]
 
 
 def build_predictions(matches: pd.DataFrame, fixtures: list[dict]) -> list[dict]:

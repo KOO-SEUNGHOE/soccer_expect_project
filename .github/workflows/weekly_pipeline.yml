@@ -35,14 +35,14 @@ jobs:
       - run: pip install -r requirements.txt
       # football-data.co.uk는 과거 결과만 제공하므로, 현재 시즌 CSV를 다시 받는 것만으로
       # "지난 라운드 실제 결과 수집"이 해결된다 (별도 결과 API 불필요).
-      - run: python src/ingest/download.py --seasons 2526
+      - run: python src/ingest/download.py --seasons 2627
       - run: python src/pipeline/collect_results.py
       - run: python src/evaluate/generate_badge.py
       - name: Commit updated logs/README
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/raw/E0_2526.csv logs/predictions.db README.md
+          git add data/raw/E0_2627.csv logs/predictions.db README.md
           git diff --cached --quiet || git commit -m "chore: 지난 라운드 결과 반영 및 배지 갱신"
           git push
 
@@ -55,7 +55,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install -r requirements.txt
-      - run: python src/ingest/download.py --seasons 2526
+      - run: python src/ingest/download.py --seasons 2627
       # 예정 경기 일정은 football-data.co.uk에 없어 football-data.org API가 필요하다.
       # 리포지토리 Settings > Secrets and variables > Actions에 FOOTBALL_DATA_API_KEY를
       # 등록해야 한다 (https://www.football-data.org/client/register 무료 발급).
@@ -66,6 +66,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/raw/E0_2526.csv logs/predictions.db
+          git add data/raw/E0_2627.csv logs/predictions.db
           git diff --cached --quiet || git commit -m "feat: 다음 라운드 예측 생성"
           git push

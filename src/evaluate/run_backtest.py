@@ -15,7 +15,7 @@ from evaluate.backtest import run_walkforward_backtest, summarize
 from features.build_features import load_all_seasons
 
 RAW_DIR = pathlib.Path(__file__).resolve().parents[2] / "data" / "raw"
-SEASON_FILES = ["E0_2223.csv", "E0_2324.csv", "E0_2425.csv", "E0_2526.csv"]
+SEASON_FILES = ["E0_2223.csv", "E0_2324.csv", "E0_2425.csv", "E0_2526.csv", "E0_2627.csv"]
 
 FEATURE_SETS = {
     "베이스라인 (피처 없음)": None,
