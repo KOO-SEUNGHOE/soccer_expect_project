@@ -14,6 +14,13 @@ import streamlit as st
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
+from analytics.descriptive_stats import (
+    home_advantage_stats,
+    load_all_match_stats,
+    odds_movement_accuracy,
+    referee_card_stats,
+    team_attack_defense_profile,
+)
 from betman.db import connect as betman_connect
 from betman.db import fetch_scored as betman_fetch_scored
 from betman.db import fetch_unscored as betman_fetch_unscored
@@ -24,7 +31,7 @@ from features.build_features import load_all_seasons
 from pipeline.db import connect, fetch_scored, fetch_unscored
 
 RAW_DIR = pathlib.Path(__file__).resolve().parents[1] / "data" / "raw"
-SEASON_FILES = ["E0_2223.csv", "E0_2324.csv", "E0_2425.csv", "E0_2526.csv"]
+SEASON_FILES = ["E0_2223.csv", "E0_2324.csv", "E0_2425.csv", "E0_2526.csv", "E0_2627.csv"]
 ENHANCED_FEATURE_COLS = ["form", "venue_form", "rest_days"]
 OUTCOME_VECTOR = {"H": (1, 0, 0), "D": (0, 1, 0), "A": (0, 0, 1)}
 OUTCOME_LABEL = {"H": "홈팀 승", "D": "무승부", "A": "원정팀 승"}
@@ -96,6 +103,11 @@ def load_backtest_summaries() -> tuple[dict, dict, dict, pd.DataFrame]:
     enhanced = run_walkforward_backtest(matches, feature_cols=ENHANCED_FEATURE_COLS)
     dixon_coles = run_walkforward_backtest(matches, feature_cols=None, use_dixon_coles=True)
     return summarize(baseline), summarize(enhanced), summarize(dixon_coles), dixon_coles
+
+
+@st.cache_data(show_spinner="슈팅/코너/카드/배당변동 데이터 집계 중...")
+def load_match_stats() -> pd.DataFrame:
+    return load_all_match_stats([RAW_DIR / f for f in SEASON_FILES])
 
 
 def _match_brier(row: pd.Series) -> float:
@@ -185,8 +197,8 @@ ODDS_COLUMN_CONFIG = {
     "odds_a": st.column_config.NumberColumn("원정승 배당", format="%.2f"),
 }
 
-tab_backtest, tab_live, tab_upcoming, tab_betman = st.tabs(
-    ["📊 백테스트", "🎯 실전 성능", "🔮 다음 라운드 예측", "🎟️ 배트맨 프로토"]
+tab_backtest, tab_live, tab_upcoming, tab_betman, tab_insights = st.tabs(
+    ["📊 백테스트", "🎯 실전 성능", "🔮 다음 라운드 예측", "🎟️ 배트맨 프로토", "📈 팀 데이터 분석"]
 )
 
 with tab_backtest:
@@ -373,4 +385,91 @@ with tab_betman:
             column_config=ODDS_COLUMN_CONFIG,
             hide_index=True,
             use_container_width=True,
+        )
+
+with tab_insights:
+    st.markdown('<div class="section-title">📈 팀 데이터 분석</div>', unsafe_allow_html=True)
+    st.markdown('<span class="pill">순수 탐색적 분석 · 예측이 아님</span>', unsafe_allow_html=True)
+    st.caption(
+        "raw 데이터에는 스코어/배당 외에도 슈팅, 유효슈팅, 코너킥, 카드, 심판, 배당 시가/종가가 "
+        "있는데 예측 모델은 데이터 누수 방지 때문에 이 중 일부만 씁니다. 여기서는 이미 확정된 "
+        "과거 경기를 그대로 집계/요약만 합니다 — 승부 예측 정확도와는 무관합니다."
+    )
+    stats_df = load_match_stats()
+
+    st.markdown('<div class="section-title" style="margin-top:1rem;">리그 전체 홈 어드밴티지</div>', unsafe_allow_html=True)
+    home_stats = home_advantage_stats(stats_df)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1, st.container(border=True):
+        st.metric("홈승 비율", f"{home_stats['home_win_pct']:.0f}%")
+    with c2, st.container(border=True):
+        st.metric("무승부 비율", f"{home_stats['draw_pct']:.0f}%")
+    with c3, st.container(border=True):
+        st.metric("원정승 비율", f"{home_stats['away_win_pct']:.0f}%")
+    with c4, st.container(border=True):
+        st.metric(
+            "평균 득점(홈 vs 원정)",
+            f"{home_stats['avg_home_goals']:.2f} : {home_stats['avg_away_goals']:.2f}",
+            help=f"{home_stats['n_matches']}경기 기준",
+        )
+
+    st.markdown('<div class="section-title" style="margin-top:1.4rem;">팀별 공격/수비 프로필</div>', unsafe_allow_html=True)
+    st.caption("홈+원정 통합 평균. 슈팅정확도% = 유효슈팅/전체슈팅, 결정력 = 득점/유효슈팅 (높을수록 기회를 잘 살림).")
+    with st.container(border=True):
+        profile = team_attack_defense_profile(stats_df)
+        goal_chart_df = profile.melt(
+            id_vars="팀", value_vars=["평균득점", "평균실점"], var_name="구분", value_name="값"
+        )
+        chart = alt.Chart(goal_chart_df).mark_bar().encode(
+            x=alt.X("팀", sort=profile.sort_values("평균득점", ascending=False)["팀"].tolist()),
+            y=alt.Y("값", title="경기당 평균"),
+            color=alt.Color(
+                "구분",
+                scale=alt.Scale(domain=["평균득점", "평균실점"], range=["#22c55e", "#ef4444"]),
+                legend=alt.Legend(title=None, orient="top"),
+            ),
+            xOffset="구분",
+            tooltip=["팀", "구분", alt.Tooltip("값", format=".2f")],
+        ).properties(height=340)
+        st.altair_chart(chart, use_container_width=True)
+
+    with st.expander("팀별 상세 지표 (슈팅/코너/카드/결정력)"):
+        st.dataframe(
+            profile[["팀", "경기수", "평균득점", "평균실점", "평균슈팅", "평균유효슈팅",
+                     "슈팅정확도%", "결정력", "평균코너", "평균경고", "평균퇴장"]],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    st.markdown('<div class="section-title" style="margin-top:1.4rem;">심판별 카드 성향</div>', unsafe_allow_html=True)
+    st.caption("경기당 평균 경고(옐로카드) 수. 표본이 3경기 미만인 심판은 제외했습니다.")
+    with st.container(border=True):
+        referee_df = referee_card_stats(stats_df).head(15)
+        ref_chart = alt.Chart(referee_df).mark_bar(color="#f59e0b").encode(
+            x=alt.X("심판", sort="-y"),
+            y=alt.Y("평균경고", title="경기당 평균 경고 수"),
+            tooltip=["심판", "경기수", alt.Tooltip("평균경고", format=".2f")],
+        ).properties(height=320)
+        st.altair_chart(ref_chart, use_container_width=True)
+
+    st.markdown('<div class="section-title" style="margin-top:1.4rem;">배당 시가 vs 종가 — 어느 쪽이 결과를 더 잘 맞혔나</div>', unsafe_allow_html=True)
+    st.caption(
+        "종가(킥오프 직전 마감 배당)는 라인업 발표 등 시가 이후 정보까지 반영됩니다. "
+        "종가 적중률이 시가보다 높다면, 마감 직전 배당일수록 더 정확한 정보를 담고 있다는 뜻입니다."
+    )
+    movement = odds_movement_accuracy(stats_df)
+    m1, m2, m3 = st.columns(3)
+    with m1, st.container(border=True):
+        st.metric("시가(오픈) 유력팀 적중률", f"{movement['시가_적중률']:.1f}%")
+    with m2, st.container(border=True):
+        st.metric(
+            "종가(마감) 유력팀 적중률",
+            f"{movement['종가_적중률']:.1f}%",
+            delta=f"{movement['종가_적중률'] - movement['시가_적중률']:+.1f}%p",
+        )
+    with m3, st.container(border=True):
+        st.metric(
+            "시가→종가 유력팀 전환 비율",
+            f"{movement['시가종가_유력팀_전환_비율']:.1f}%",
+            help="시가와 종가에서 가장 유력한 팀(가장 낮은 배당)이 바뀐 경기의 비율",
         )
