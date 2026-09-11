@@ -121,15 +121,42 @@ def _predicted_outcome_code(row: pd.Series) -> str:
     return max(probs, key=probs.get)
 
 
+# 1위-2위 확률 격차가 이 아래면 "이 경기는 한쪽으로 확신하기 어렵다"는 뜻으로 본다.
+# 사용자 피드백(정배 위주 예측은 원치 않음)에 따라, 무승부를 억지로 1순위로
+# 밀어 올리는 대신(데이터상 근거가 없음) 격차가 좁은 경기를 있는 그대로
+# "박빙"이라고 밝혀서 과도하게 확신에 찬 "OO팀 승 우세" 문구를 피한다.
+CLOSE_MATCH_MARGIN_PP = 18.0
+VERY_CLOSE_MATCH_MARGIN_PP = 8.0
+
+
+def _match_closeness(probs: dict[str, float]) -> tuple[str, float]:
+    """확률(0~100) 딕셔너리에서 1위-2위 격차를 보고 박빙 여부를 라벨링한다."""
+    ranked = sorted(probs.values(), reverse=True)
+    margin = ranked[0] - ranked[1]
+    if margin < VERY_CLOSE_MATCH_MARGIN_PP:
+        return "🔥 초박빙", margin
+    if margin < CLOSE_MATCH_MARGIN_PP:
+        return "박빙", margin
+    return "확실", margin
+
+
 def _predicted_outcome_text(row: pd.Series) -> str:
-    """예측 결과를 사람이 읽을 문장으로 요약한다 (예: "Liverpool 승 우세 (75%)")."""
+    """예측 결과를 사람이 읽을 문장으로 요약한다.
+
+    격차가 좁은 경기는 "Liverpool 승 우세" 같은 단정적 문구 대신 무승부
+    확률을 함께 보여줘서, 실제로는 애매한 경기를 확신에 찬 것처럼 보여주지
+    않는다 (예: "Liverpool 우세하나 박빙 (48% · 무승부 30%)").
+    """
     probs = {"H": row["홈승%"], "D": row["무승부%"], "A": row["원정승%"]}
     best = _predicted_outcome_code(row)
     pct = probs[best]
+    label, _margin = _match_closeness(probs)
     if best == "D":
         return f"무승부 우세 ({pct:.0f}%)"
     team = row["홈팀"] if best == "H" else row["원정팀"]
-    return f"{team} 승 우세 ({pct:.0f}%)"
+    if label == "확실":
+        return f"{team} 승 우세 ({pct:.0f}%)"
+    return f"{team} 우세하나 {label} ({pct:.0f}% · 무승부 {probs['D']:.0f}%)"
 
 
 def _with_percent_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -171,6 +198,7 @@ PROB_COLUMN_CONFIG = {
 
 MARKET_COLUMN_CONFIG = {
     **PROB_COLUMN_CONFIG,
+    "박빙도": st.column_config.TextColumn("박빙도", help="1위-2위 확률 격차가 좁을수록 결과를 점치기 어려운 경기"),
     "최유력 스코어": st.column_config.TextColumn("최유력 스코어"),
     "BTTS%": st.column_config.ProgressColumn("양팀득점(BTTS) 확률", format="%.0f%%", min_value=0, max_value=100),
     "오버2.5%": st.column_config.ProgressColumn("오버 2.5골 확률", format="%.0f%%", min_value=0, max_value=100),
@@ -184,17 +212,28 @@ def _favorite_code(row: pd.Series) -> str:
 
 
 def _favorite_text(row: pd.Series) -> str:
+    """배당 기준 예상 결과를 사람이 읽을 문장으로 요약한다.
+
+    _predicted_outcome_text와 같은 이유로, 시장 확률(격차)이 좁은 경기는
+    "OO팀 승 우세"라고 단정하지 않고 박빙임을 함께 보여준다.
+    """
+    probs = {"H": row["홈승%"], "D": row["무승부%"], "A": row["원정승%"]}
     code = _favorite_code(row)
+    label, _margin = _match_closeness(probs)
     if code == "D":
         return f"무승부 우세 (배당 {row['odds_d']:.2f})"
     team = row["home_team"] if code == "H" else row["away_team"]
-    return f"{team} 승 우세 (배당 {row[f'odds_{code.lower()}']:.2f})"
+    if label == "확실":
+        return f"{team} 승 우세 (배당 {row[f'odds_{code.lower()}']:.2f})"
+    return f"{team} 우세하나 {label} (배당 {row[f'odds_{code.lower()}']:.2f} · 무승부 {probs['D']:.0f}%)"
 
 
 ODDS_COLUMN_CONFIG = {
+    "박빙도": st.column_config.TextColumn("박빙도", help="1위-2위 시장확률 격차가 좁을수록 결과를 점치기 어려운 경기"),
     "odds_h": st.column_config.NumberColumn("홈승 배당", format="%.2f"),
     "odds_d": st.column_config.NumberColumn("무승부 배당", format="%.2f"),
     "odds_a": st.column_config.NumberColumn("원정승 배당", format="%.2f"),
+    **PROB_COLUMN_CONFIG,
 }
 
 tab_backtest, tab_live, tab_upcoming, tab_betman, tab_insights = st.tabs(
@@ -311,17 +350,38 @@ with tab_upcoming:
         st.info("저장된 예정 경기 예측이 없습니다. `python src/pipeline/predict_next_round.py`를 먼저 실행하세요.")
     else:
         df = _with_percent_columns(pd.DataFrame([dict(r) for r in unscored_rows]))
+        closeness = df.apply(
+            lambda r: _match_closeness({"H": r["홈승%"], "D": r["무승부%"], "A": r["원정승%"]}), axis=1
+        )
+        df["박빙도"] = [c[0] for c in closeness]
         df["예상 결과"] = df.apply(_predicted_outcome_text, axis=1)
         df["최유력 스코어"] = df.get("most_likely_score")
         df["BTTS%"] = df.get("btts_yes_prob", pd.Series(dtype=float)) * 100
         df["오버2.5%"] = df.get("over_2_5_prob", pd.Series(dtype=float)) * 100
+
+        league_draw_pct = home_advantage_stats(load_match_stats())["draw_pct"]
+        n_close = int((df["박빙도"] != "확실").sum())
+        n_draw_favorable = int((df["무승부%"] > league_draw_pct).sum())
+        m1, m2, m3 = st.columns(3)
+        with m1, st.container(border=True):
+            st.metric("이번 라운드 경기 수", f"{len(df)}경기")
+        with m2, st.container(border=True):
+            st.metric("박빙 경기", f"{n_close}경기", help="1위-2위 확률 격차 18%p 미만")
+        with m3, st.container(border=True):
+            st.metric(
+                "리그 평균보다 무승부 확률 높은 경기",
+                f"{n_draw_favorable}경기",
+                help=f"리그 전체 평균 무승부 비율({league_draw_pct:.0f}%)보다 이 경기의 무승부 예측 확률이 높은 경우",
+            )
         st.caption(
+            "정배(가장 낮은 배당)만 밀어주는 방식 대신, 1위-2위 확률 격차가 좁은 경기는 "
+            "'박빙'으로 그대로 보여줍니다. 무승부를 억지로 1순위로 올리진 않지만(데이터상 근거가 "
+            "없으면 하지 않습니다), 최소한 애매한 경기를 확신에 찬 것처럼 포장하지 않습니다. "
             "최유력 스코어/BTTS(양팀득점)/오버-언더는 모델이 이미 계산해둔 스코어 확률 분포에서 "
-            "뽑아낸 값입니다. 이 값들이 비어 있으면 아직 이전 버전 모델로 저장된 예측이라 "
-            "다음 주간 파이프라인 실행 후 채워집니다."
+            "뽑아낸 값입니다."
         )
         st.dataframe(
-            df[["날짜", "홈팀", "원정팀", "예상 결과", "홈승%", "무승부%", "원정승%",
+            df[["날짜", "홈팀", "원정팀", "박빙도", "예상 결과", "홈승%", "무승부%", "원정승%",
                 "최유력 스코어", "BTTS%", "오버2.5%"]],
             column_config=MARKET_COLUMN_CONFIG,
             hide_index=True,
@@ -345,12 +405,38 @@ with tab_betman:
         st.info("저장된 배당이 없습니다. `python src/betman/proto_odds.py`를 먼저 실행하세요.")
     else:
         odds_df = pd.DataFrame([dict(r) for r in betman_unscored])
+        odds_df["홈승%"] = odds_df["implied_h"] * 100
+        odds_df["무승부%"] = odds_df["implied_d"] * 100
+        odds_df["원정승%"] = odds_df["implied_a"] * 100
+        closeness = odds_df.apply(
+            lambda r: _match_closeness({"H": r["홈승%"], "D": r["무승부%"], "A": r["원정승%"]}), axis=1
+        )
+        odds_df["박빙도"] = [c[0] for c in closeness]
         odds_df["예상 결과"] = odds_df.apply(_favorite_text, axis=1)
         odds_df = odds_df.rename(columns={
             "match_date": "날짜", "home_team": "홈팀", "away_team": "원정팀",
         })
+
+        n_close = int((odds_df["박빙도"] != "확실").sum())
+        n_draw_favorite = int((odds_df.apply(_favorite_code, axis=1) == "D").sum())
+        b1, b2 = st.columns(2)
+        with b1, st.container(border=True):
+            st.metric("박빙 경기", f"{n_close}/{len(odds_df)}경기", help="배당(implied) 1위-2위 격차 18%p 미만")
+        with b2, st.container(border=True):
+            st.metric(
+                "무승부가 최유력인 경기",
+                f"{n_draw_favorite}경기",
+                help="배당이 세 결과 중 가장 낮은(implied 확률이 가장 높은) 쪽이 무승부인 경기",
+            )
+        st.caption(
+            "배당(implied 확률)을 %로도 함께 보여줍니다. 무승부가 '단독 1위'인 경기가 거의 없는 건 "
+            "우리 모델만의 한계가 아니라 **실제 시장 배당 자체가 그렇습니다** — 아래 '배당 시가 vs 종가' "
+            "탭(팀 데이터 분석)에서 보듯 리그 전체 무승부 비율은 24% 안팎으로, 홈승(44%)보다 항상 "
+            "낮은 게 정상입니다. 두 팀이 정말 백중세일 때만 무승부가 1위로 올라옵니다."
+        )
         st.dataframe(
-            odds_df[["날짜", "홈팀", "원정팀", "예상 결과", "odds_h", "odds_d", "odds_a"]],
+            odds_df[["날짜", "홈팀", "원정팀", "박빙도", "예상 결과",
+                     "odds_h", "odds_d", "odds_a", "홈승%", "무승부%", "원정승%"]],
             column_config=ODDS_COLUMN_CONFIG,
             hide_index=True,
             use_container_width=True,
