@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import math
 import pathlib
 import sys
 
@@ -35,6 +36,23 @@ SEASON_FILES = ["E0_2223.csv", "E0_2324.csv", "E0_2425.csv", "E0_2526.csv", "E0_
 ENHANCED_FEATURE_COLS = ["form", "venue_form", "rest_days"]
 OUTCOME_VECTOR = {"H": (1, 0, 0), "D": (0, 1, 0), "A": (0, 0, 1)}
 OUTCOME_LABEL = {"H": "홈팀 승", "D": "무승부", "A": "원정팀 승"}
+
+# 팀 데이터 분석의 "Top 5 리더보드"용 최소 표본 경기 수는 고정값이 아니라
+# 그 범위(전체 시즌 or 이번 시즌만)에서 가장 많이 뛴 팀 대비 비율로 정한다.
+# 2026-27 시즌에 막 승격한 팀(헐 시티 등)은 지금까지 3경기뿐이라 "최소 실점
+# 0.00"처럼 극단값이 우연히 1위를 차지할 수 있었다(사용자 피드백,
+# 2026-09-12) — 고정 컷(예: 10경기)은 "이번 시즌만" 범위에서는 모든 팀이
+# 아직 10경기를 못 채워 전부 걸러지는 문제가 있어, 비율 기반으로 범위가
+# 바뀌어도 자동으로 맞게 스케일되게 했다. 전체 표에는 경기수 컬럼과 함께
+# 그대로 나오므로 데이터가 사라지진 않는다.
+LEADERBOARD_MIN_MATCHES_RATIO = 0.3
+
+# 심판은 팀과 달리 "신규 승격팀 vs 5시즌 베테랑" 같은 구조적 표본 격차가 없고
+# (매 라운드 배정되는 심판 수가 팀 수보다 적어 원래도 편차가 큼), 그보다는
+# 순수하게 "1경기만 본 표본"의 노이즈를 거르는 게 목적이라 팀처럼 비율이
+# 아닌 낮은 고정값을 쓴다. 이전엔 3이었는데 "이번 시즌만" 범위에서는 가장
+# 많이 배정된 심판도 아직 3경기뿐이라 사실상 1명만 남는 문제가 있어 2로 낮춤.
+REFEREE_MIN_MATCHES = 2
 
 st.set_page_config(page_title="football-predictor", page_icon="⚽", layout="wide")
 
@@ -75,6 +93,43 @@ st.markdown(
         display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px;
         font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em;
         background: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid rgba(74,222,128,0.3);
+    }
+
+    /* 결과 분포 스택 바 (팀 데이터 분석 탭) — 축구 통계 사이트(Sofascore 등)의
+       순위표/분포 바 패턴을 참고: 숫자 나열보다 비율 막대 하나가 한눈에 더 잘 들어온다. */
+    .result-bar {
+        display: flex; height: 16px; border-radius: 999px; overflow: hidden;
+        margin: 0.7rem 0 0.6rem 0; background: rgba(255,255,255,0.05);
+    }
+    .result-bar span { display: block; height: 100%; }
+    .result-legend { display: flex; gap: 1.3rem; font-size: 0.82rem; color: #9ca3af; flex-wrap: wrap; }
+    .result-legend .dot {
+        display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 0.4rem;
+    }
+    .result-legend b { color: #e5e7eb; font-family: 'JetBrains Mono', monospace; }
+
+    /* 순위 배지 — 리더보드 스타일 표의 1열 */
+    .rank-chip {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 22px; height: 22px; border-radius: 7px; font-size: 0.72rem; font-weight: 700;
+        font-family: 'JetBrains Mono', monospace; background: rgba(255,255,255,0.08); color: #9ca3af;
+        flex-shrink: 0;
+    }
+    .rank-chip.top { background: rgba(34,197,94,0.18); color: #4ade80; }
+
+    /* 미니 리더보드 (Top 5 공격/수비) — Sofascore 순위표의 "막대 안에 값이 보이는"
+       스캔하기 쉬운 형태를 참고 */
+    .lb-list { display: flex; flex-direction: column; gap: 0.55rem; }
+    .lb-row { display: flex; align-items: center; gap: 0.6rem; }
+    .lb-team {
+        width: 112px; flex-shrink: 0; font-size: 0.85rem;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .lb-bar-track { flex: 1; height: 8px; border-radius: 999px; background: rgba(255,255,255,0.06); overflow: hidden; }
+    .lb-bar-fill { display: block; height: 100%; border-radius: 999px; }
+    .lb-value {
+        width: 54px; text-align: right; flex-shrink: 0;
+        font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; font-weight: 600;
     }
 
     /* 숫자는 모노스페이스로 — 데이터 대시보드 트렌드 */
@@ -235,6 +290,65 @@ ODDS_COLUMN_CONFIG = {
     "odds_a": st.column_config.NumberColumn("원정승 배당", format="%.2f"),
     **PROB_COLUMN_CONFIG,
 }
+
+
+def _render_result_distribution(home_stats: dict) -> None:
+    """홈승/무/원정승 비율을 숫자 나열 대신 스택 바 하나로 보여준다(Sofascore류
+    순위표의 분포 바 패턴 참고) — 세 숫자를 따로 읽는 것보다 한눈에 비교하기 쉽다."""
+    st.markdown(
+        f"""
+        <div class="result-bar">
+          <span style="width:{home_stats['home_win_pct']:.2f}%; background:#22c55e;"></span>
+          <span style="width:{home_stats['draw_pct']:.2f}%; background:#6b7280;"></span>
+          <span style="width:{home_stats['away_win_pct']:.2f}%; background:#ef4444;"></span>
+        </div>
+        <div class="result-legend">
+          <span><span class="dot" style="background:#22c55e;"></span>홈승 <b>{home_stats['home_win_pct']:.0f}%</b></span>
+          <span><span class="dot" style="background:#6b7280;"></span>무승부 <b>{home_stats['draw_pct']:.0f}%</b></span>
+          <span><span class="dot" style="background:#ef4444;"></span>원정승 <b>{home_stats['away_win_pct']:.0f}%</b></span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_mini_leaderboard(df: pd.DataFrame, value_col: str, value_fmt: str, bar_color: str, top_n: int = 5) -> None:
+    """상위 N개 팀을 순위 배지 + 인라인 막대 형태의 리더보드로 렌더링한다."""
+    top = df.head(top_n).reset_index(drop=True)
+    max_val = float(top[value_col].max()) or 1.0
+    rows = []
+    for i, row in top.iterrows():
+        rank = i + 1
+        bar_pct = max(4.0, row[value_col] / max_val * 100)
+        rank_class = "rank-chip top" if rank <= 3 else "rank-chip"
+        rows.append(
+            f'<div class="lb-row">'
+            f'<span class="{rank_class}">{rank}</span>'
+            f'<span class="lb-team" title="{row["팀"]}">{row["팀"]}</span>'
+            f'<span class="lb-bar-track"><span class="lb-bar-fill" '
+            f'style="width:{bar_pct:.0f}%; background:{bar_color};"></span></span>'
+            f'<span class="lb-value">{value_fmt.format(row[value_col])}</span>'
+            f"</div>"
+        )
+    st.markdown(f'<div class="lb-list">{"".join(rows)}</div>', unsafe_allow_html=True)
+
+
+def _team_profile_column_config(profile: pd.DataFrame) -> dict:
+    """ProgressColumn의 max_value를 실제 데이터 최댓값 기준으로 동적으로 잡아
+    매직 넘버 없이 컬럼마다 적절한 스케일로 막대가 보이게 한다."""
+    def prog(col: str, fmt: str, max_value: float | None = None) -> st.column_config.ProgressColumn:
+        return st.column_config.ProgressColumn(
+            col, format=fmt, min_value=0, max_value=max_value or float(profile[col].max()) * 1.05
+        )
+
+    return {
+        "순위": st.column_config.NumberColumn("순위", width="small"),
+        "평균득점": prog("평균득점", "%.2f"),
+        "평균실점": prog("평균실점", "%.2f"),
+        "결정력": prog("결정력", "%.3f"),
+        "슈팅정확도%": prog("슈팅정확도%", "%.1f%%", max_value=100.0),
+    }
+
 
 tab_backtest, tab_live, tab_upcoming, tab_betman, tab_insights = st.tabs(
     ["📊 백테스트", "🎯 실전 성능", "🔮 다음 라운드 예측", "🎟️ 배트맨 프로토", "📈 팀 데이터 분석"]
@@ -482,60 +596,84 @@ with tab_insights:
         "과거 경기를 그대로 집계/요약만 합니다 — 승부 예측 정확도와는 무관합니다."
     )
     stats_df = load_match_stats()
+    all_seasons = sorted(stats_df["시즌"].unique())
+    current_season = all_seasons[-1]
+    scope_full = f"전체 시즌 ({all_seasons[0]}~{current_season} · {len(stats_df)}경기)"
+    scope_current = f"이번 시즌만 ({current_season})"
+    scope = st.radio("데이터 범위", [scope_full, scope_current], horizontal=True, label_visibility="collapsed")
+    if scope == scope_current:
+        stats_df = stats_df[stats_df["시즌"] == current_season].reset_index(drop=True)
 
-    st.markdown('<div class="section-title" style="margin-top:1rem;">리그 전체 홈 어드밴티지</div>', unsafe_allow_html=True)
     home_stats = home_advantage_stats(stats_df)
-    c1, c2, c3, c4 = st.columns(4)
-    with c1, st.container(border=True):
-        st.metric("홈승 비율", f"{home_stats['home_win_pct']:.0f}%")
-    with c2, st.container(border=True):
-        st.metric("무승부 비율", f"{home_stats['draw_pct']:.0f}%")
-    with c3, st.container(border=True):
-        st.metric("원정승 비율", f"{home_stats['away_win_pct']:.0f}%")
-    with c4, st.container(border=True):
-        st.metric(
-            "평균 득점(홈 vs 원정)",
-            f"{home_stats['avg_home_goals']:.2f} : {home_stats['avg_away_goals']:.2f}",
-            help=f"{home_stats['n_matches']}경기 기준",
+    col_dist, col_goals = st.columns([2, 1])
+    with col_dist, st.container(border=True):
+        st.markdown(f'<div class="section-title">리그 전체 결과 분포 <span style="color:#6b7280; font-weight:500; font-size:0.8rem;">· {home_stats["n_matches"]}경기</span></div>', unsafe_allow_html=True)
+        _render_result_distribution(home_stats)
+    with col_goals, st.container(border=True):
+        st.markdown('<div class="section-title">평균 득점</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="display:flex; align-items:baseline; gap:0.5rem; margin-top:0.4rem;">'
+            f'<span style="font-family:\'JetBrains Mono\',monospace; font-size:1.6rem; font-weight:700; color:#4ade80;">{home_stats["avg_home_goals"]:.2f}</span>'
+            f'<span style="color:#6b7280; font-size:0.85rem;">홈</span>'
+            f'<span style="color:#6b7280;">vs</span>'
+            f'<span style="font-family:\'JetBrains Mono\',monospace; font-size:1.6rem; font-weight:700; color:#f87171;">{home_stats["avg_away_goals"]:.2f}</span>'
+            f'<span style="color:#6b7280; font-size:0.85rem;">원정</span>'
+            f"</div>",
+            unsafe_allow_html=True,
         )
 
-    st.markdown('<div class="section-title" style="margin-top:1.4rem;">팀별 공격/수비 프로필</div>', unsafe_allow_html=True)
-    st.caption("홈+원정 통합 평균. 슈팅정확도% = 유효슈팅/전체슈팅, 결정력 = 득점/유효슈팅 (높을수록 기회를 잘 살림).")
-    with st.container(border=True):
-        profile = team_attack_defense_profile(stats_df)
-        goal_chart_df = profile.melt(
-            id_vars="팀", value_vars=["평균득점", "평균실점"], var_name="구분", value_name="값"
-        )
-        chart = alt.Chart(goal_chart_df).mark_bar().encode(
-            x=alt.X("팀", sort=profile.sort_values("평균득점", ascending=False)["팀"].tolist()),
-            y=alt.Y("값", title="경기당 평균"),
-            color=alt.Color(
-                "구분",
-                scale=alt.Scale(domain=["평균득점", "평균실점"], range=["#22c55e", "#ef4444"]),
-                legend=alt.Legend(title=None, orient="top"),
-            ),
-            xOffset="구분",
-            tooltip=["팀", "구분", alt.Tooltip("값", format=".2f")],
-        ).properties(height=340)
-        st.altair_chart(chart, use_container_width=True)
+    st.markdown('<div class="section-title" style="margin-top:1.4rem;">팀별 공격/수비 리더보드</div>', unsafe_allow_html=True)
+    st.caption("홈+원정 통합 평균. 결정력 = 득점/유효슈팅(기회를 잘 살리는 정도). 아래 표는 검색·정렬이 됩니다(헤더 클릭).")
+    profile = team_attack_defense_profile(stats_df)
+    min_matches = max(1, math.ceil(profile["경기수"].max() * LEADERBOARD_MIN_MATCHES_RATIO))
+    qualified = profile[profile["경기수"] >= min_matches]
 
-    with st.expander("팀별 상세 지표 (슈팅/코너/카드/결정력)"):
-        st.dataframe(
-            profile[["팀", "경기수", "평균득점", "평균실점", "평균슈팅", "평균유효슈팅",
-                     "슈팅정확도%", "결정력", "평균코너", "평균경고", "평균퇴장"]],
-            hide_index=True,
-            use_container_width=True,
+    lb_col1, lb_col2 = st.columns(2)
+    with lb_col1, st.container(border=True):
+        st.markdown("**⚽ 득점 Top 5**")
+        st.caption(f"최소 {min_matches}경기 이상 표본만 (막 승격한 팀 등 소수 경기 극단값 방지 위해 제외)")
+        _render_mini_leaderboard(qualified.sort_values("평균득점", ascending=False), "평균득점", "{:.2f}", "#22c55e")
+    with lb_col2, st.container(border=True):
+        st.markdown("**🧱 최소 실점 Top 5**")
+        st.caption(f"최소 {min_matches}경기 이상 표본만 (막 승격한 팀 등 소수 경기 극단값 방지 위해 제외)")
+        _render_mini_leaderboard(qualified.sort_values("평균실점", ascending=True), "평균실점", "{:.2f}", "#f87171")
+
+    search_col, sort_col = st.columns([2, 1])
+    with search_col:
+        team_search = st.text_input("🔍 팀 검색", placeholder="예: Liverpool", label_visibility="collapsed")
+    with sort_col:
+        sort_choice = st.selectbox(
+            "정렬 기준", ["평균득점 높은순", "평균실점 낮은순", "결정력 높은순", "슈팅정확도 높은순"],
+            label_visibility="collapsed",
         )
+    sort_map = {
+        "평균득점 높은순": ("평균득점", False), "평균실점 낮은순": ("평균실점", True),
+        "결정력 높은순": ("결정력", False), "슈팅정확도 높은순": ("슈팅정확도%", False),
+    }
+    sort_field, sort_asc = sort_map[sort_choice]
+    table = profile.sort_values(sort_field, ascending=sort_asc).reset_index(drop=True)
+    if team_search:
+        table = table[table["팀"].str.contains(team_search, case=False, na=False)].reset_index(drop=True)
+    table.insert(0, "순위", range(1, len(table) + 1))
+
+    st.dataframe(
+        table[["순위", "팀", "경기수", "평균득점", "평균실점", "평균슈팅", "평균유효슈팅",
+               "슈팅정확도%", "결정력", "평균코너", "평균경고", "평균퇴장"]],
+        column_config=_team_profile_column_config(profile),
+        hide_index=True,
+        use_container_width=True,
+    )
 
     st.markdown('<div class="section-title" style="margin-top:1.4rem;">심판별 카드 성향</div>', unsafe_allow_html=True)
-    st.caption("경기당 평균 경고(옐로카드) 수. 표본이 3경기 미만인 심판은 제외했습니다.")
+    st.caption(f"경기당 평균 경고(옐로카드) 수 상위 15명. 표본이 {REFEREE_MIN_MATCHES}경기 미만인 심판은 제외했습니다.")
     with st.container(border=True):
-        referee_df = referee_card_stats(stats_df).head(15)
-        ref_chart = alt.Chart(referee_df).mark_bar(color="#f59e0b").encode(
-            x=alt.X("심판", sort="-y"),
-            y=alt.Y("평균경고", title="경기당 평균 경고 수"),
+        referee_df = referee_card_stats(stats_df, min_matches=REFEREE_MIN_MATCHES).head(15)
+        ref_chart = alt.Chart(referee_df).mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(
+            y=alt.Y("심판", sort="-x", title=None),
+            x=alt.X("평균경고", title="경기당 평균 경고 수"),
+            color=alt.Color("평균경고", scale=alt.Scale(scheme="oranges"), legend=None),
             tooltip=["심판", "경기수", alt.Tooltip("평균경고", format=".2f")],
-        ).properties(height=320)
+        ).properties(height=380)
         st.altair_chart(ref_chart, use_container_width=True)
 
     st.markdown('<div class="section-title" style="margin-top:1.4rem;">배당 시가 vs 종가 — 어느 쪽이 결과를 더 잘 맞혔나</div>', unsafe_allow_html=True)

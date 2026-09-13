@@ -8,6 +8,7 @@ raw CSV에는 스코어/배당 말고도 슈팅, 유효슈팅, 코너킥, 카드
 from __future__ import annotations
 
 import pathlib
+import re
 
 import pandas as pd
 
@@ -16,6 +17,19 @@ STATS_COLUMNS = [
     "Referee", "HS", "AS", "HST", "AST", "HF", "AF", "HC", "AC", "HY", "AY", "HR", "AR",
     "B365H", "B365D", "B365A", "B365CH", "B365CD", "B365CA",
 ]
+
+# raw CSV 파일명(예: "E0_2627.csv")에서 시즌 표기("2026-27")를 뽑아낸다.
+# 시즌 필터(전체 시즌 vs 이번 시즌만) UI를 위해 필요한 최소 정보다.
+_SEASON_CODE_RE = re.compile(r"E0_(\d{2})(\d{2})")
+
+
+def season_label_from_path(path: str | pathlib.Path) -> str:
+    """"E0_2627.csv" -> "2026-27" 처럼 파일명에서 시즌 표기를 만든다."""
+    m = _SEASON_CODE_RE.search(pathlib.Path(path).stem)
+    if not m:
+        raise ValueError(f"파일명에서 시즌 코드를 찾지 못함: {path}")
+    start, end = m.groups()
+    return f"20{start}-{end}"
 
 
 def load_match_stats(path: str | pathlib.Path) -> pd.DataFrame:
@@ -26,6 +40,7 @@ def load_match_stats(path: str | pathlib.Path) -> pd.DataFrame:
         raise ValueError(f"필수 컬럼 누락: {missing}")
 
     df = df[STATS_COLUMNS].copy()
+    df["시즌"] = season_label_from_path(path)
     df["Date"] = pd.to_datetime(df["Date"], format="%d/%m/%Y")
     df = df.sort_values("Date").reset_index(drop=True)
     df = df.dropna(subset=["FTHG", "FTAG", "FTR"])

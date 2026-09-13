@@ -5,6 +5,7 @@ from analytics.descriptive_stats import (
     home_advantage_stats,
     odds_movement_accuracy,
     referee_card_stats,
+    season_label_from_path,
     team_attack_defense_profile,
 )
 
@@ -56,3 +57,13 @@ def test_odds_movement_accuracy_reports_hit_rates_in_valid_range():
     assert stats["n_matches"] == 3
     assert 0.0 <= stats["시가_적중률"] <= 100.0
     assert 0.0 <= stats["종가_적중률"] <= 100.0
+
+
+def test_season_label_from_path_parses_filename():
+    assert season_label_from_path("data/raw/E0_2627.csv") == "2026-27"
+    assert season_label_from_path("E0_2223.csv") == "2022-23"
+
+
+def test_season_label_from_path_rejects_unrecognized_filename():
+    with pytest.raises(ValueError):
+        season_label_from_path("data/raw/unexpected_name.csv")
