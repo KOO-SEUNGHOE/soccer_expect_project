@@ -18,6 +18,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 from analytics.descriptive_stats import (
     home_advantage_stats,
     load_all_match_stats,
+    lookup_market_hit_rate,
+    market_odds_calibration,
     odds_movement_accuracy,
     referee_card_stats,
     team_attack_defense_profile,
@@ -243,6 +245,34 @@ def render_calibration_chart(curve: pd.DataFrame) -> None:
         ],
     )
     st.altair_chart((line + points).properties(height=320), use_container_width=True)
+
+
+MARKET_COLOR_SCALE = alt.Scale(domain=["홈승", "무승부", "원정승"], range=["#22c55e", "#9ca3af", "#ef4444"])
+
+
+def render_market_calibration_chart(curve: pd.DataFrame) -> None:
+    """배당(implied 확률) vs 실제 적중 비율을 H/D/A 세 선으로 따로 보여준다.
+
+    render_calibration_chart와 달리 한 선으로 풀지 않는다 — 무승부만의 가격
+    왜곡 패턴이 홈/원정승과 섞이면 안 보이기 때문(사용자 요청, 2026-09-21).
+    """
+    diagonal = pd.DataFrame({"x": [0, 1], "y": [0, 1]})
+    line = alt.Chart(diagonal).mark_line(strokeDash=[5, 4], color="#6b7280").encode(
+        x=alt.X("x", scale=alt.Scale(domain=[0, 1])), y=alt.Y("y", scale=alt.Scale(domain=[0, 1]))
+    )
+    series = alt.Chart(curve).mark_line(point=True).encode(
+        x=alt.X("predicted_mean", scale=alt.Scale(domain=[0, 1]), title="배당 implied 확률"),
+        y=alt.Y("actual_freq", scale=alt.Scale(domain=[0, 1]), title="실제 적중 비율"),
+        color=alt.Color("시장", scale=MARKET_COLOR_SCALE, legend=alt.Legend(title=None, orient="top")),
+        tooltip=[
+            "시장",
+            alt.Tooltip("배당(대략)", title="배당(대략)"),
+            alt.Tooltip("predicted_mean", title="implied 확률", format=".2f"),
+            alt.Tooltip("actual_freq", title="실제 적중률", format=".2f"),
+            alt.Tooltip("n", title="표본수"),
+        ],
+    )
+    st.altair_chart((line + series).properties(height=360), use_container_width=True)
 
 
 PROB_COLUMN_CONFIG = {
@@ -527,6 +557,17 @@ with tab_betman:
         )
         odds_df["박빙도"] = [c[0] for c in closeness]
         odds_df["예상 결과"] = odds_df.apply(_favorite_text, axis=1)
+
+        hist_market_curve = market_odds_calibration(load_match_stats(), n_bins=10)
+
+        def _historical_hit_rate_pct(row: pd.Series, code: str, implied_col: str) -> float | None:
+            result = lookup_market_hit_rate(hist_market_curve, code, row[implied_col], n_bins=10)
+            return result[0] * 100 if result else None
+
+        odds_df["홈승 과거적중%"] = odds_df.apply(lambda r: _historical_hit_rate_pct(r, "H", "implied_h"), axis=1)
+        odds_df["무승부 과거적중%"] = odds_df.apply(lambda r: _historical_hit_rate_pct(r, "D", "implied_d"), axis=1)
+        odds_df["원정승 과거적중%"] = odds_df.apply(lambda r: _historical_hit_rate_pct(r, "A", "implied_a"), axis=1)
+
         odds_df = odds_df.rename(columns={
             "match_date": "날짜", "home_team": "홈팀", "away_team": "원정팀",
         })
@@ -548,10 +589,23 @@ with tab_betman:
             "탭(팀 데이터 분석)에서 보듯 리그 전체 무승부 비율은 24% 안팎으로, 홈승(44%)보다 항상 "
             "낮은 게 정상입니다. 두 팀이 정말 백중세일 때만 무승부가 1위로 올라옵니다."
         )
+        st.caption(
+            "'과거적중%' 컬럼은 이 경기의 배당(implied 확률)과 **비슷한 배당대였던 과거 경기들**이 "
+            "실제로 그 결과로 끝난 비율입니다(팀 데이터 분석 탭 '배당대별 실제 적중률' 참고). "
+            "예: 무승부 배당 implied 29%인데 과거적중%가 35%라면, 이 배당대에서 시장이 무승부를 "
+            "과소평가해온 편이라는 뜻 — 표본이 부족한 배당대는 빈 칸으로 남습니다."
+        )
         st.dataframe(
             odds_df[["날짜", "홈팀", "원정팀", "박빙도", "예상 결과",
-                     "odds_h", "odds_d", "odds_a", "홈승%", "무승부%", "원정승%"]],
-            column_config=ODDS_COLUMN_CONFIG,
+                     "odds_h", "홈승%", "홈승 과거적중%",
+                     "odds_d", "무승부%", "무승부 과거적중%",
+                     "odds_a", "원정승%", "원정승 과거적중%"]],
+            column_config={
+                **ODDS_COLUMN_CONFIG,
+                "홈승 과거적중%": st.column_config.ProgressColumn("홈승 과거적중률", format="%.0f%%", min_value=0, max_value=100),
+                "무승부 과거적중%": st.column_config.ProgressColumn("무승부 과거적중률", format="%.0f%%", min_value=0, max_value=100),
+                "원정승 과거적중%": st.column_config.ProgressColumn("원정승 과거적중률", format="%.0f%%", min_value=0, max_value=100),
+            },
             hide_index=True,
             use_container_width=True,
         )
@@ -696,4 +750,30 @@ with tab_insights:
             "시가→종가 유력팀 전환 비율",
             f"{movement['시가종가_유력팀_전환_비율']:.1f}%",
             help="시가와 종가에서 가장 유력한 팀(가장 낮은 배당)이 바뀐 경기의 비율",
+        )
+
+    st.markdown('<div class="section-title" style="margin-top:1.4rem;">배당대별 실제 적중률 — 이 배당일 때 이 결과가 잘 나오나?</div>', unsafe_allow_html=True)
+    st.caption(
+        "예: 무승부 배당이 약 3.40(implied 29%)이던 경기들만 모아서, 실제로 그중 몇 %가 "
+        "무승부로 끝났는지 봅니다. 점선(y=x)보다 위면 그 배당대에서 시장이 해당 결과를 "
+        "**과소평가**(실제로 더 자주 나옴), 아래면 **과대평가**한다는 뜻입니다. 홈승/무승부/원정승을 "
+        "한 선으로 합치지 않고 따로 그린 이유는 무승부만의 왜곡 패턴이 섞여 안 보이는 걸 막기 위해서입니다."
+    )
+    with st.container(border=True):
+        market_curve = market_odds_calibration(stats_df, n_bins=10)
+        render_market_calibration_chart(market_curve)
+
+    with st.expander("배당구간별 정확한 수치 보기"):
+        table = market_curve.sort_values(["시장", "배당(대략)"])[["시장", "배당(대략)", "predicted_mean", "actual_freq", "n"]].copy()
+        table["predicted_mean"] *= 100
+        table["actual_freq"] *= 100
+        table = table.rename(columns={"predicted_mean": "implied 확률%", "actual_freq": "실제 적중률%", "n": "표본수"})
+        st.dataframe(
+            table,
+            column_config={
+                "implied 확률%": st.column_config.ProgressColumn("implied 확률", format="%.0f%%", min_value=0, max_value=100),
+                "실제 적중률%": st.column_config.ProgressColumn("실제 적중률", format="%.0f%%", min_value=0, max_value=100),
+            },
+            hide_index=True,
+            use_container_width=True,
         )

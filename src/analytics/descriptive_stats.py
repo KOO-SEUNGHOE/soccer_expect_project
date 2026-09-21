@@ -10,11 +10,16 @@ from __future__ import annotations
 import pathlib
 import re
 
+import numpy as np
 import pandas as pd
+
+from evaluate.calibration import compute_calibration
+from features.build_features import implied_probabilities
 
 STATS_COLUMNS = [
     "Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "FTR", "HTHG", "HTAG",
     "Referee", "HS", "AS", "HST", "AST", "HF", "AF", "HC", "AC", "HY", "AY", "HR", "AR",
+    "AvgH", "AvgD", "AvgA",
     "B365H", "B365D", "B365A", "B365CH", "B365CD", "B365CA",
 ]
 
@@ -131,3 +136,57 @@ def odds_movement_accuracy(df: pd.DataFrame) -> dict:
         "종가_적중률": float((d["종가유력"] == d["FTR"]).mean() * 100),
         "시가종가_유력팀_전환_비율": float((d["시가유력"] != d["종가유력"]).mean() * 100),
     }
+
+
+_MARKET_LABELS = {"H": "홈승", "D": "무승부", "A": "원정승"}
+
+
+def market_odds_calibration(df: pd.DataFrame, n_bins: int = 10) -> pd.DataFrame:
+    """배당(implied 확률) 구간별로 실제 그 결과가 얼마나 자주 나왔는지 H/D/A
+    각각 따로 계산한다 — "무승부 배당이 3.40(implied 29%)일 때 실제로 무승부가
+    몇 %로 나왔는가" 같은 질문에 답하기 위함이다(사용자 요청, 2026-09-21).
+
+    evaluate.calibration.compute_calibration()과 완전히 같은 통계 기법(원-vs-
+    나머지 캘리브레이션)을 모델 확률이 아니라 시장(배당) 확률에 적용한다.
+    H/D/A를 하나로 풀지 않고 마켓별로 따로 계산하는 이유: 한 곡선으로 합치면
+    "동일 확률대에서 무승부만 유독 저평가/고평가"인 패턴이 홈/원정승 표본과
+    섞여 사라진다.
+    """
+    d = df.dropna(subset=["AvgH", "AvgD", "AvgA"]).copy()
+    probs = d.apply(lambda r: implied_probabilities(r), axis=1, result_type="expand")
+    d["market_H"], d["market_D"], d["market_A"] = probs[0], probs[1], probs[2]
+
+    curves = []
+    for code, col in [("H", "market_H"), ("D", "market_D"), ("A", "market_A")]:
+        curve = compute_calibration(d, {code: col}, n_bins=n_bins)
+        if curve.empty:
+            continue
+        curve["시장"] = _MARKET_LABELS[code]
+        curves.append(curve)
+    combined = pd.concat(curves, ignore_index=True) if curves else pd.DataFrame(
+        columns=["bin_center", "predicted_mean", "actual_freq", "n", "시장"]
+    )
+    combined["배당(대략)"] = (1 / combined["predicted_mean"]).round(2)
+    return combined
+
+
+def lookup_market_hit_rate(
+    calibration_df: pd.DataFrame, market_code: str, predicted_prob: float, n_bins: int = 10
+) -> tuple[float, int] | None:
+    """새 배당의 implied 확률이 속하는 과거 구간의 실제 적중 비율·표본수를 찾는다.
+
+    market_odds_calibration()과 반드시 같은 n_bins으로 호출해야 구간 경계가
+    맞는다. 해당 구간에 과거 표본이 아예 없으면 None.
+    """
+    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+    bin_idx = int(np.clip(np.digitize([predicted_prob], bin_edges)[0] - 1, 0, n_bins - 1))
+    bin_center = (bin_edges[bin_idx] + bin_edges[bin_idx + 1]) / 2
+
+    label = _MARKET_LABELS[market_code]
+    match = calibration_df[
+        (calibration_df["시장"] == label) & np.isclose(calibration_df["bin_center"], bin_center)
+    ]
+    if match.empty:
+        return None
+    row = match.iloc[0]
+    return float(row["actual_freq"]), int(row["n"])
