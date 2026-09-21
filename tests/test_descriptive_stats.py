@@ -86,6 +86,7 @@ def test_market_odds_calibration_separates_hit_rate_by_market():
     assert draw_row["predicted_mean"] == pytest.approx(1 / 3, abs=1e-9)
     assert draw_row["actual_freq"] == pytest.approx(0.4, abs=1e-9)
     assert draw_row["n"] == 10
+    assert draw_row["적중"] == 4  # "10전 4승"처럼 바로 읽을 수 있는 정수 카운트
 
     home_row = curve[curve["시장"] == "홈승"].iloc[0]
     # 홈승도 implied 확률은 무승부와 똑같이 1/3이지만 실제 적중률은 다르다(0.3).

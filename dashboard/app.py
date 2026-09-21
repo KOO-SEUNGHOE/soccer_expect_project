@@ -130,9 +130,10 @@ st.markdown(
     .lb-bar-track { flex: 1; height: 8px; border-radius: 999px; background: rgba(255,255,255,0.06); overflow: hidden; }
     .lb-bar-fill { display: block; height: 100%; border-radius: 999px; }
     .lb-value {
-        width: 54px; text-align: right; flex-shrink: 0;
+        width: 54px; text-align: right; flex-shrink: 0; white-space: nowrap;
         font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; font-weight: 600;
     }
+    .lb-value.wide { width: 78px; }
 
     /* 숫자는 모노스페이스로 — 데이터 대시보드 트렌드 */
     div[data-testid="stMetricValue"] { font-family: 'JetBrains Mono', monospace; font-weight: 700; }
@@ -340,6 +341,26 @@ def _render_result_distribution(home_stats: dict) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def _render_odds_record_list(curve: pd.DataFrame, market_label: str, bar_color: str) -> None:
+    """배당(대략) 오름차순으로 "N전 M승"(적중 횟수/표본수) 기록을 리더보드 스타일
+    리스트로 보여준다 — 퍼센트만 있으면 표본이 몇 건인지 감이 안 와서, 정확한
+    횟수를 바로 읽을 수 있게 해달라는 요청에 따른 표시 방식(사용자 요청,
+    2026-09-21)."""
+    subset = curve[curve["시장"] == market_label].sort_values("배당(대략)").reset_index(drop=True)
+    rows = []
+    for _, row in subset.iterrows():
+        bar_pct = max(4.0, row["actual_freq"] * 100)
+        rows.append(
+            f'<div class="lb-row">'
+            f'<span class="lb-team">{row["배당(대략)"]:.2f}배</span>'
+            f'<span class="lb-bar-track"><span class="lb-bar-fill" '
+            f'style="width:{bar_pct:.0f}%; background:{bar_color};"></span></span>'
+            f'<span class="lb-value wide">{int(row["적중"])}/{int(row["n"])}</span>'
+            f"</div>"
+        )
+    st.markdown(f'<div class="lb-list">{"".join(rows)}</div>', unsafe_allow_html=True)
 
 
 def _render_mini_leaderboard(df: pd.DataFrame, value_col: str, value_fmt: str, bar_color: str, top_n: int = 5) -> None:
@@ -560,13 +581,20 @@ with tab_betman:
 
         hist_market_curve = market_odds_calibration(load_match_stats(), n_bins=10)
 
-        def _historical_hit_rate_pct(row: pd.Series, code: str, implied_col: str) -> float | None:
+        def _historical_record_text(row: pd.Series, code: str, implied_col: str) -> str:
+            """"18/23 (78%)"처럼 표본 대비 적중 횟수를 그대로 보여준다 — 퍼센트만
+            있으면 표본이 몇 건인지 감이 안 와서 개수를 바로 읽고 싶다는 요청에
+            따른 형식(사용자 요청, 2026-09-21)."""
             result = lookup_market_hit_rate(hist_market_curve, code, row[implied_col], n_bins=10)
-            return result[0] * 100 if result else None
+            if not result:
+                return "-"
+            hit_rate, n = result
+            hits = round(hit_rate * n)
+            return f"{hits}/{n} ({hit_rate * 100:.0f}%)"
 
-        odds_df["홈승 과거적중%"] = odds_df.apply(lambda r: _historical_hit_rate_pct(r, "H", "implied_h"), axis=1)
-        odds_df["무승부 과거적중%"] = odds_df.apply(lambda r: _historical_hit_rate_pct(r, "D", "implied_d"), axis=1)
-        odds_df["원정승 과거적중%"] = odds_df.apply(lambda r: _historical_hit_rate_pct(r, "A", "implied_a"), axis=1)
+        odds_df["홈승 과거기록"] = odds_df.apply(lambda r: _historical_record_text(r, "H", "implied_h"), axis=1)
+        odds_df["무승부 과거기록"] = odds_df.apply(lambda r: _historical_record_text(r, "D", "implied_d"), axis=1)
+        odds_df["원정승 과거기록"] = odds_df.apply(lambda r: _historical_record_text(r, "A", "implied_a"), axis=1)
 
         odds_df = odds_df.rename(columns={
             "match_date": "날짜", "home_team": "홈팀", "away_team": "원정팀",
@@ -590,22 +618,18 @@ with tab_betman:
             "낮은 게 정상입니다. 두 팀이 정말 백중세일 때만 무승부가 1위로 올라옵니다."
         )
         st.caption(
-            "'과거적중%' 컬럼은 이 경기의 배당(implied 확률)과 **비슷한 배당대였던 과거 경기들**이 "
-            "실제로 그 결과로 끝난 비율입니다(팀 데이터 분석 탭 '배당대별 실제 적중률' 참고). "
-            "예: 무승부 배당 implied 29%인데 과거적중%가 35%라면, 이 배당대에서 시장이 무승부를 "
-            "과소평가해온 편이라는 뜻 — 표본이 부족한 배당대는 빈 칸으로 남습니다."
+            "'과거기록' 컬럼(N전 M승)은 이 경기의 배당(implied 확률)과 **비슷한 배당대였던 과거 경기들** "
+            "중 실제로 그 결과로 끝난 횟수입니다(팀 데이터 분석 탭 '배당대별 실제 적중률' 참고). "
+            "예: 무승부 배당 implied 29%인데 과거기록이 41/140(29%)이라면 딱 배당대로 나온 것이고, "
+            "48/140(34%)라면 이 배당대에서 시장이 무승부를 과소평가해온 편이라는 뜻입니다 — "
+            "표본이 부족한 배당대는 '-'로 남습니다."
         )
         st.dataframe(
             odds_df[["날짜", "홈팀", "원정팀", "박빙도", "예상 결과",
-                     "odds_h", "홈승%", "홈승 과거적중%",
-                     "odds_d", "무승부%", "무승부 과거적중%",
-                     "odds_a", "원정승%", "원정승 과거적중%"]],
-            column_config={
-                **ODDS_COLUMN_CONFIG,
-                "홈승 과거적중%": st.column_config.ProgressColumn("홈승 과거적중률", format="%.0f%%", min_value=0, max_value=100),
-                "무승부 과거적중%": st.column_config.ProgressColumn("무승부 과거적중률", format="%.0f%%", min_value=0, max_value=100),
-                "원정승 과거적중%": st.column_config.ProgressColumn("원정승 과거적중률", format="%.0f%%", min_value=0, max_value=100),
-            },
+                     "odds_h", "홈승%", "홈승 과거기록",
+                     "odds_d", "무승부%", "무승부 과거기록",
+                     "odds_a", "원정승%", "원정승 과거기록"]],
+            column_config=ODDS_COLUMN_CONFIG,
             hide_index=True,
             use_container_width=True,
         )
@@ -763,17 +787,14 @@ with tab_insights:
         market_curve = market_odds_calibration(stats_df, n_bins=10)
         render_market_calibration_chart(market_curve)
 
-    with st.expander("배당구간별 정확한 수치 보기"):
-        table = market_curve.sort_values(["시장", "배당(대략)"])[["시장", "배당(대략)", "predicted_mean", "actual_freq", "n"]].copy()
-        table["predicted_mean"] *= 100
-        table["actual_freq"] *= 100
-        table = table.rename(columns={"predicted_mean": "implied 확률%", "actual_freq": "실제 적중률%", "n": "표본수"})
-        st.dataframe(
-            table,
-            column_config={
-                "implied 확률%": st.column_config.ProgressColumn("implied 확률", format="%.0f%%", min_value=0, max_value=100),
-                "실제 적중률%": st.column_config.ProgressColumn("실제 적중률", format="%.0f%%", min_value=0, max_value=100),
-            },
-            hide_index=True,
-            use_container_width=True,
-        )
+    st.caption("배당대별 정확한 기록(적중/표본수). 배당은 낮은(유력) 순 → 높은(의외) 순으로 정렬됩니다.")
+    odds_col1, odds_col2, odds_col3 = st.columns(3)
+    with odds_col1, st.container(border=True):
+        st.markdown("**🟢 홈승 배당대별 기록**")
+        _render_odds_record_list(market_curve, "홈승", "#22c55e")
+    with odds_col2, st.container(border=True):
+        st.markdown("**⚪ 무승부 배당대별 기록**")
+        _render_odds_record_list(market_curve, "무승부", "#9ca3af")
+    with odds_col3, st.container(border=True):
+        st.markdown("**🔴 원정승 배당대별 기록**")
+        _render_odds_record_list(market_curve, "원정승", "#ef4444")

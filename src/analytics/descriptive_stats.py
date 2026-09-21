@@ -167,6 +167,9 @@ def market_odds_calibration(df: pd.DataFrame, n_bins: int = 10) -> pd.DataFrame:
         columns=["bin_center", "predicted_mean", "actual_freq", "n", "시장"]
     )
     combined["배당(대략)"] = (1 / combined["predicted_mean"]).round(2)
+    # "23전 18승"처럼 표본 수 대비 적중 횟수를 바로 읽을 수 있게 정수 카운트도 남긴다
+    # (actual_freq는 0/1 평균이라 * n이 거의 정확히 정수가 됨 — 부동소수 오차만 반올림).
+    combined["적중"] = (combined["actual_freq"] * combined["n"]).round().astype(int)
     return combined
 
 
