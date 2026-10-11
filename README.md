@@ -178,9 +178,8 @@
   (헤드리스 브라우저)가 필요하다. GitHub Actions 같은 클라우드 IP는 이런 사이트의
   봇 차단에 걸리기 쉬워 원래 로컬/수동 전용이었는데, 매번 손으로 갱신하는 게
   번거로워 `.github/workflows/betman_update.yml`(하루 3회: 배당 스크랩 + 종료
-  경기 결과 채점)로 자동화를 시도 중이다. 막혀도 이 워크플로의 해당 스텝만
-  실패하고 메인 파이프라인엔 영향이 없다. 결과 채점만 따로 돌리려면
-  `python src/betman/fetch_results.py`.
+  경기 결과 채점)로 자동화했고, 첫 실행에서 클라우드 IP도 차단되지 않고 정상
+  동작함을 확인했다. 결과 채점만 따로 돌리려면 `python src/betman/fetch_results.py`.
 - **사용법**:
   ```bash
   pip install -r requirements-betman.txt

@@ -162,7 +162,10 @@ def scrape_epl_odds(page: Page) -> list[dict]:
 def main() -> None:
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page()
+        # 사이트가 킥오프 시각을 브라우저 타임존 기준으로 렌더링한다. UTC 서버(GitHub Actions)에서는
+        # KST 00:30 경기가 전날 15:30으로 보여 날짜가 어긋나므로 항상 KST로 고정한다.
+        context = browser.new_context(timezone_id="Asia/Seoul", locale="ko-KR")
+        page = context.new_page()
         records = scrape_epl_odds(page)
         browser.close()
 

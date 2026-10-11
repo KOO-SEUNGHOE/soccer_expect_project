@@ -44,7 +44,7 @@ football-predictor/
 │   ├── evaluate/            # 백테스트, Brier score, 배당 대비 성능, README 배지 생성
 │   ├── pipeline/             # 주간 파이프라인 (다음 라운드 예측 생성, 지난 결과 수집, DB)
 │   ├── betman/                # [메인 파이프라인과 별개 섹션] 배트맨 프로토 승부식 배당
-│   │                           # 스크래핑(Playwright) — 자동화는 betman_update.yml(클라우드 IP 차단 여부 검증 중)
+│   │                           # 스크래핑(Playwright) — betman_update.yml로 자동화됨(클라우드 IP에서 정상 동작 확인)
 │   ├── analytics/             # 승부 예측과 무관한 순수 탐색적 분석 (팀별 슈팅/카드
 │   │                           # 프로필, 심판 성향, 배당 시가-종가 비교 등)
 │   └── api/                  # FastAPI 서빙 레이어 (아직 미구현)
@@ -58,7 +58,7 @@ football-predictor/
 │   ├── weekly_pipeline.yml    # 매주 월/금 cron. 실제 GitHub Actions에서 수동 실행(workflow_dispatch)으로
 │   │                           # 검증 완료 (numpy Python 버전 문제, 승격팀 이름 매핑 3건 발견해 수정함)
 │   └── betman_update.yml      # 하루 3회 배트맨 배당 스크랩 + 종료 경기 결과 채점 (2026-10-11 추가,
-│                               # 클라우드 IP에서 실제로 되는지는 첫 실행으로 확인 필요)
+│                               # 첫 수동 실행으로 클라우드 IP 차단 없음 확인)
 ├── requirements.txt            # 메인 파이프라인/대시보드 의존성
 ├── requirements-betman.txt     # 배트맨 섹션 전용 (playwright 추가, requirements.txt 상속)
 └── tests/                     # pytest 유닛 테스트 (마진 제거, 포아송 확률, 롤링 피처 누수,
@@ -183,14 +183,18 @@ football-predictor/
 - **왜 별도 섹션인가**: 배트맨의 "축구토토 승무패"는 배당이 아니라 투표율(%)만
   주므로 이 프로젝트의 "배당 마진 제거 → 시장 확률" 방법론과 성격이 다르다.
   "프로토 승부식"만 실제 소수점 고정 배당을 쓴다.
-- **자동화 상태(2026-10-11)**: 배당 데이터가 페이지 로드 후 내부 API 호출로
+- **자동화 상태(2026-10-11, 동작 확인)**: 배당 데이터가 페이지 로드 후 내부 API 호출로
   채워져서 Playwright(헤드리스 브라우저)가 필요하고, GitHub Actions 같은 클라우드
   IP는 이런 사이트의 봇 차단에 걸리기 쉽다는 우려로 원래는 로컬/수동 전용이었다.
-  매번 손으로 갱신하는 게 번거로워 `.github/workflows/betman_update.yml`로 자동화를
-  시도한다. 스크랩/채점 스텝은 `continue-on-error`라 막혀도 메인 파이프라인에는
-  영향이 없고, 막히는 게 확인되면 로컬 스케줄러(Windows 작업 스케줄러)로 전환한다.
-  **첫 실행 결과로 이 항목을 갱신할 것.** `requirements.txt`가 아닌
-  `requirements-betman.txt`에 playwright를 분리해둔 건 그대로다.
+  `.github/workflows/betman_update.yml`(하루 3회)로 자동화했고, 첫 수동 실행에서
+  **클라우드 IP도 차단되지 않고 정상 스크랩**됨을 확인했다(우려가 기우였음).
+  스크랩/채점 스텝은 `continue-on-error`라 나중에 막혀도 메인 파이프라인엔 영향이 없다
+  — 단 그 경우 워크플로는 Success로 보이므로 실제 갱신 여부는 `scraped_at`/봇 커밋으로
+  확인해야 한다. 막히면 로컬 스케줄러(Windows 작업 스케줄러)로 전환한다.
+  **주의**: 사이트가 킥오프 시각을 브라우저 타임존 기준으로 렌더링한다. UTC 러너에서는
+  KST 00:30 경기가 전날 15:30으로 보여 중복 행이 생겼던 버그를 발견해, Playwright
+  컨텍스트를 `Asia/Seoul`로 고정해 수정했다(`proto_odds.py`, `fetch_results.py`).
+  `requirements.txt`가 아닌 `requirements-betman.txt`에 playwright를 분리해둔 건 그대로다.
 - `src/betman/proto_odds.py`: 홈 화면에서 현재 판매 중인 프로토 승부식 회차를
   자동으로 찾아 EPL 경기의 배당을 `logs/betman_odds.db`에 저장
 - `src/betman/score_odds.py`: 시즌 CSV 재다운로드로 결과 확정된 경기를 채점

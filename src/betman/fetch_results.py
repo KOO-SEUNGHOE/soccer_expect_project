@@ -171,7 +171,10 @@ def main() -> None:
     today_kst = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=9)).date()
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page()
+        # 사이트가 킥오프 시각을 브라우저 타임존 기준으로 렌더링한다. UTC 서버(GitHub Actions)에서는
+        # KST 00:30 경기가 전날 15:30으로 보여 날짜가 어긋나므로 항상 KST로 고정한다.
+        context = browser.new_context(timezone_id="Asia/Seoul", locale="ko-KR")
+        page = context.new_page()
         finished = scrape_finished_matches(page, include_previous_month=today_kst.day <= PREVIOUS_MONTH_DAYS)
         browser.close()
 
