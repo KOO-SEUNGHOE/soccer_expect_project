@@ -1,0 +1,48 @@
+name: Betman Update
+
+# 배트맨(betman.co.kr) 프로토 승부식 배당 스크랩 + 종료된 EPL 경기 결과 채점.
+#
+# 이전에는 "클라우드 IP는 봇 차단에 걸리기 쉽다"는 우려로 로컬/수동 전용이었다.
+# 실제로 막히는지는 돌려봐야 알 수 있어서, 스크랩/채점 스텝은 continue-on-error로
+# 둔다 — 막히면 이 워크플로만 해당 스텝이 실패하고 메인 파이프라인(weekly_pipeline)에는
+# 영향이 없다. 막히는 게 확인되면 로컬 스케줄러(Windows 작업 스케줄러)로 전환할 것.
+#
+# cron은 UTC 기준: 10:00/18:00/02:00 KST (하루 3회).
+on:
+  schedule:
+    - cron: "0 1,9,17 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 같은 DB 파일(logs/*.db)을 쓰는 다른 워크플로와 동시에 돌면 바이너리 파일 충돌이
+# 나서, 쓰기 작업은 한 번에 하나씩만 돌게 직렬화한다.
+concurrency:
+  group: pipeline-db-writes
+  cancel-in-progress: false
+
+jobs:
+  betman:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements-betman.txt
+      - run: playwright install --with-deps chromium
+      - name: 배당 스크랩 (프로토 승부식)
+        continue-on-error: true
+        run: python src/betman/proto_odds.py
+      - name: 종료 경기 결과 채점 (일정/결과 페이지)
+        continue-on-error: true
+        run: python src/betman/fetch_results.py
+      - run: python src/evaluate/generate_badge.py
+      - name: Commit updated DBs/README
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add logs/betman_odds.db logs/predictions.db README.md
+          git diff --cached --quiet || git commit -m "chore: 배트맨 배당/결과 자동 갱신"
+          git push

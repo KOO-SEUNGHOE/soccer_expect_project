@@ -20,6 +20,12 @@ on:
 permissions:
   contents: write
 
+# logs/*.db를 쓰는 워크플로(betman_update.yml 포함)끼리 동시에 돌면 바이너리 충돌이
+# 나서 한 번에 하나씩만 돌게 직렬화한다.
+concurrency:
+  group: pipeline-db-writes
+  cancel-in-progress: false
+
 jobs:
   collect_results:
     if: github.event_name == 'schedule' && github.event.schedule == '0 22 * * 0' || (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'collect')

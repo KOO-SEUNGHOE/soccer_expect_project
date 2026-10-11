@@ -1,7 +1,7 @@
 # football-predictor
 
 <!-- BADGE:START -->
-![실전 예측 성능](https://img.shields.io/badge/%EC%8B%A4%EC%A0%84%20%EC%98%88%EC%B8%A1%2026%EA%B2%BD%EA%B8%B0%20Brier-0.728-blue)
+![실전 예측 성능](https://img.shields.io/badge/%EC%8B%A4%EC%A0%84%20%EC%98%88%EC%B8%A1%2032%EA%B2%BD%EA%B8%B0%20Brier-0.707-blue)
 <!-- BADGE:END -->
 
 해외 5대리그(우선 EPL) 경기 결과를 포아송 회귀로 예측하고, 북메이커 배당과
@@ -174,10 +174,13 @@
   실제 배당이 아니라 베팅 금액 비율(투표율%)만 제공한다 — 이 프로젝트가
   전제하는 "배당 마진 제거 → 시장 확률"과 성격이 다르다. 반면 "프로토 승부식"은
   실시간으로 오르내리는 진짜 소수점 고정 배당(예: 1.90/3.30/3.40)을 쓴다.
-- **자동화 파이프라인에 포함하지 않는 이유**: 이 데이터는 페이지 로드 후 내부
-  API 호출로 채워져서 Playwright(헤드리스 브라우저)가 필요하다. GitHub Actions
-  같은 클라우드 IP는 이런 사이트의 봇 차단에 걸리기 쉬워서, 로컬/수동 실행
-  전용으로 뒀다.
+- **자동화**: 이 데이터는 페이지 로드 후 내부 API 호출로 채워져서 Playwright
+  (헤드리스 브라우저)가 필요하다. GitHub Actions 같은 클라우드 IP는 이런 사이트의
+  봇 차단에 걸리기 쉬워 원래 로컬/수동 전용이었는데, 매번 손으로 갱신하는 게
+  번거로워 `.github/workflows/betman_update.yml`(하루 3회: 배당 스크랩 + 종료
+  경기 결과 채점)로 자동화를 시도 중이다. 막혀도 이 워크플로의 해당 스텝만
+  실패하고 메인 파이프라인엔 영향이 없다. 결과 채점만 따로 돌리려면
+  `python src/betman/fetch_results.py`.
 - **사용법**:
   ```bash
   pip install -r requirements-betman.txt

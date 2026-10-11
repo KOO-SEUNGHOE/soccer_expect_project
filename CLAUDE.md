@@ -44,7 +44,7 @@ football-predictor/
 │   ├── evaluate/            # 백테스트, Brier score, 배당 대비 성능, README 배지 생성
 │   ├── pipeline/             # 주간 파이프라인 (다음 라운드 예측 생성, 지난 결과 수집, DB)
 │   ├── betman/                # [메인 파이프라인과 별개 섹션] 배트맨 프로토 승부식 배당
-│   │                           # 스크래핑(Playwright) — 로컬/수동 전용, 자동화 미포함
+│   │                           # 스크래핑(Playwright) — 자동화는 betman_update.yml(클라우드 IP 차단 여부 검증 중)
 │   ├── analytics/             # 승부 예측과 무관한 순수 탐색적 분석 (팀별 슈팅/카드
 │   │                           # 프로필, 심판 성향, 배당 시가-종가 비교 등)
 │   └── api/                  # FastAPI 서빙 레이어 (아직 미구현)
@@ -55,8 +55,10 @@ football-predictor/
 │   ├── predictions.db        # 우리 모델 예측 이력 DB (주간 파이프라인이 최초 실행 시 생성)
 │   └── betman_odds.db        # 배트맨 프로토 배당 이력 DB (별개, 수동 실행 시 생성)
 ├── .github/workflows/
-│   └── weekly_pipeline.yml    # 매주 월/금 cron. 실제 GitHub Actions에서 수동 실행(workflow_dispatch)으로
-│                               # 검증 완료 (numpy Python 버전 문제, 승격팀 이름 매핑 3건 발견해 수정함)
+│   ├── weekly_pipeline.yml    # 매주 월/금 cron. 실제 GitHub Actions에서 수동 실행(workflow_dispatch)으로
+│   │                           # 검증 완료 (numpy Python 버전 문제, 승격팀 이름 매핑 3건 발견해 수정함)
+│   └── betman_update.yml      # 하루 3회 배트맨 배당 스크랩 + 종료 경기 결과 채점 (2026-10-11 추가,
+│                               # 클라우드 IP에서 실제로 되는지는 첫 실행으로 확인 필요)
 ├── requirements.txt            # 메인 파이프라인/대시보드 의존성
 ├── requirements-betman.txt     # 배트맨 섹션 전용 (playwright 추가, requirements.txt 상속)
 └── tests/                     # pytest 유닛 테스트 (마진 제거, 포아송 확률, 롤링 피처 누수,
@@ -181,14 +183,21 @@ football-predictor/
 - **왜 별도 섹션인가**: 배트맨의 "축구토토 승무패"는 배당이 아니라 투표율(%)만
   주므로 이 프로젝트의 "배당 마진 제거 → 시장 확률" 방법론과 성격이 다르다.
   "프로토 승부식"만 실제 소수점 고정 배당을 쓴다.
-- **왜 자동화(GitHub Actions)에 포함하지 않는가**: 배당 데이터가 페이지 로드 후
-  내부 API 호출로 채워져서 Playwright(헤드리스 브라우저)가 필요한데, GitHub
-  Actions 같은 클라우드 IP는 이런 사이트의 봇 차단에 걸리기 쉽다. 로컬/수동
-  실행 전용으로 두고, `requirements.txt`가 아닌 `requirements-betman.txt`에
-  playwright를 분리했다.
+- **자동화 상태(2026-10-11)**: 배당 데이터가 페이지 로드 후 내부 API 호출로
+  채워져서 Playwright(헤드리스 브라우저)가 필요하고, GitHub Actions 같은 클라우드
+  IP는 이런 사이트의 봇 차단에 걸리기 쉽다는 우려로 원래는 로컬/수동 전용이었다.
+  매번 손으로 갱신하는 게 번거로워 `.github/workflows/betman_update.yml`로 자동화를
+  시도한다. 스크랩/채점 스텝은 `continue-on-error`라 막혀도 메인 파이프라인에는
+  영향이 없고, 막히는 게 확인되면 로컬 스케줄러(Windows 작업 스케줄러)로 전환한다.
+  **첫 실행 결과로 이 항목을 갱신할 것.** `requirements.txt`가 아닌
+  `requirements-betman.txt`에 playwright를 분리해둔 건 그대로다.
 - `src/betman/proto_odds.py`: 홈 화면에서 현재 판매 중인 프로토 승부식 회차를
   자동으로 찾아 EPL 경기의 배당을 `logs/betman_odds.db`에 저장
 - `src/betman/score_odds.py`: 시즌 CSV 재다운로드로 결과 확정된 경기를 채점
+- `src/betman/fetch_results.py`: 배트맨 `경기정보 > 축구 > 일정/결과` 페이지에서 종료된
+  EPL 스코어를 직접 스크랩해 `predictions.db`/`betman_odds.db`를 채점. football-data.co.uk가
+  지연되거나 접속 불가일 때의 대체 소스(두 DB의 날짜 기준이 UTC/KST로 달라 팀 이름 +
+  "KST 날짜 또는 그 전날"로 매칭)
 - `src/betman/db.py`: `logs/predictions.db`와 별개인 자체 SQLite 스키마
 - 팀 이름 매핑(`KR_TO_FDCOUK_NAME`)은 실제 화면에서 하나씩 확인하며 채웠고
   (Everton의 정확한 표기가 "에버턴"이지 "에버튼"이 아니라는 것도 이렇게 발견함),
