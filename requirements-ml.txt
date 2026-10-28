@@ -1,0 +1,4 @@
+# ML 실험 전용 (무승부 분류기 등) — 대시보드/주간 파이프라인 배포에는 필요 없어서
+# requirements.txt와 분리했다. requirements-betman.txt와 같은 방식.
+-r requirements.txt
+scikit-learn==1.9.0
