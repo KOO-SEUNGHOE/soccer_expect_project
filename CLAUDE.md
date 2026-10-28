@@ -41,7 +41,8 @@ football-predictor/
 │   ├── ingest/              # 데이터 수집 (raw CSV 다운로드, football-data.org 예정 경기 API)
 │   ├── features/            # 피처 생성 (롤링 폼/홈-원정 편차/휴식일수, 마진 제거 등)
 │   ├── model/                # 학습/추론 코드 (포아송 회귀 등)
-│   ├── evaluate/            # 백테스트, Brier score, 배당 대비 성능, README 배지 생성
+│   ├── evaluate/            # 백테스트, Brier score, 배당 대비 성능, README 배지 생성,
+│   │                         # 무승부 ML 분류기 실험(draw_classifier.py)
 │   ├── pipeline/             # 주간 파이프라인 (다음 라운드 예측 생성, 지난 결과 수집, DB)
 │   ├── betman/                # [메인 파이프라인과 별개 섹션] 배트맨 프로토 승부식 배당
 │   │                           # 스크래핑(Playwright) — betman_update.yml로 자동화됨(클라우드 IP에서 정상 동작 확인)
@@ -241,6 +242,11 @@ football-predictor/
   alpha 스윕 결과는 README "백테스트 결과" 참고)
 - 표본이 적은 팀에만 선택적으로 축소추정 적용 (팀 더미 전체를 균일 규제하는
   대신), xG 기반 피처(Understat 크롤링) 등
+- ~~ML 무승부 분류기~~ (2026-10-11 시도, 시장 종가 확률을 못 이김): 종가 배당 무승부 확률 +
+  O/U·AH·배당변동·팀별 무승부율을 로지스틱/GBM으로 walk-forward 검증 — 로그손실 시장
+  0.5526 vs ML 0.5542~0.5742, AUC도 우연 범위. `src/evaluate/draw_classifier.py`,
+  `requirements-ml.txt`(scikit-learn 분리). 병목은 표본 수(무승부 ~300건)라 다른 리그
+  데이터(같은 형식의 SP1/D1/I1/F1)를 합쳐 재시도하는 게 다음 후보.
 - 시즌 문자열 하드코딩 제거: 지금은 `--seasons 2627`처럼 5개 파일 + 워크플로에
   시즌 코드가 하드코딩돼 있어 매년 8월 시즌 전환 시 사람이 직접 갱신해야
   한다(2026-09-11에 이 때문에 헐/코번트리 예측이 시즌 내내 조용히 빠지고
